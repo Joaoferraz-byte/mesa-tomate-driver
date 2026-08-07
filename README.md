@@ -23,6 +23,8 @@ Todos usam `bmRequestType=0x21`, `bRequest=0x09`, `wValue=0x0308`, `wIndex=2` e 
 
 ## Uso seguro antes do NixOS
 
+O roteiro completo de captura antes/depois e os critérios de aceitação está em [`TESTING.md`](./TESTING.md). Use-o antes de habilitar `autoStart`.
+
 Compile e execute os testes locais:
 
 ```bash
