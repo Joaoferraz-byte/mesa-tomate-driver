@@ -1,5 +1,7 @@
 { config, lib, pkgs, ... }:
 
+with lib;
+
 let
   cfg = config.services."mtm1106-mode";
   mtm1106-mode = pkgs.callPackage ./package.nix { };
@@ -22,7 +24,7 @@ in
       description = ''
         USB report profile. `digimend` is the complete four-report sequence;
         `mx002` is the single-report sequence validated by the mx002 reference
-        driver. Keep the default unless hardware testing shows otherwise.
+        driver.
       '';
     };
 
@@ -30,9 +32,7 @@ in
       type = lib.types.bool;
       default = false;
       description = ''
-        Apply the selected profile automatically when a matching 08f2:6811 USB
-        device is connected. Disabled by default because the command is based
-        on reverse engineering and must be validated on the physical tablet.
+        Automatically apply the selected profile via udev when the tablet is connected.
       '';
     };
   };
