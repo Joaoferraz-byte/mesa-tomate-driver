@@ -6,9 +6,22 @@ The solution sends `SET_REPORT` HID reports documented by the [`DIGImend/10moons
 
 > **Validation Status:** The sequence has been audited against public implementations for the T501 family but still needs to be executed and validated on the user's physical MTM-1106. Do not treat a cursor change as proof of success; use the measurement criteria below.
 
+## Windows Driver Reverse Engineering (`Tomate_Setup.exe`)
+
+The Windows driver was extracted from the vendor installer (`Tomate_Setup.exe`, Inno Setup 5.5.7 unicode, app version `4.7.2.628`, internal service `TabletServiceV20`) and inspected statically. Its architecture explains why the tablet works on Windows and not on an unmodified Linux installation, and it is the basis for the `SET_REPORT` sequence above.
+
+| Component | Identification | Role |
+| --- | --- | --- |
+| `TabletService.exe` | Delphi runtime (`TSETKEYST501`, `TTABLETSERVICEMAIN`); imports `CreateFileA`, `WriteFile`, `DeviceIoControl`, `RegisterDeviceNotificationA` | Tray/service that polls the HID device path (`\\.\GlobalRoot\Device\HID#...`) and listens for hotplug |
+| `TabletCom_vc.dll` | Internal name `pencom_vc.dll`; exports `DetectDevice`, `ReadBuffer`, `WriteBuffer`, `EraseBlock` | The proprietary protocol layer: claims the tablet by VID/PID and sends/receives out-reports that switch the firmware into full work mode (pressure, buttons, full area) |
+| `wintab32.dll`, `wisptis.exe`, `KWintab.dll` | Wacom WinTab API shim + Windows Ink wrapper | Exposes the activated tablet to drawing applications |
+| `TSetting.ini` | Mapping `4095x4095` | Confirms a 12-bit internal digitizer resolution |
+
+The key conclusion is that the tablet firmware boots in a **basic mode** (the small `205x137 mm` region, no pressure) and only `WriteBuffer`/`ReadBuffer` calls transition it into **work mode**. The exact payload bytes inside `pencom_vc.dll` are compiled by Delphi and are not readable as strings, so the payloads above are cross-validated against public implementations (`10moons-tools`, `mx002_linux_driver`, DIGImend issue [#722][6]) rather than extracted byte-for-byte. A further instrumented capture (usbmon under Windows, or Ghidra/radare on `pencom_vc.dll`) is the recommended next step to remove the last inference gap. The macOS driver (`Mac_tablet_driver.dmg`) could not be recovered: its APFS container lacks valid block headers (`NXXB` magic absent) and refuses to mount, which matches the vendor README note that "MAC OSX is not supported by current driver".
+
 ## Discoveries
 
-The `libinput.txt` file provided by the user shows two tablet interfaces for the same USB ID: one with approximately `993x585 mm` and another with `205x137 mm`. The extracted Windows driver README separately mentions `Android Mode` and `Work mode` but does not expose the communication bytes. The DigiMend tool and public Linux drivers provide the necessary protocol evidence.
+The `libinput.txt` file provided by the user shows two tablet interfaces for the same USB ID: one with approximately `993x585 mm` and another with `205x137 mm`. The extracted Windows driver README separately mentions `Android Mode` and `Work mode`; the reverse engineering of that driver (section above) is what exposes the communication bytes. The DigiMend tool and public Linux drivers provide the necessary protocol evidence.
 
 The complete sequence for the default profile is as follows:
 
