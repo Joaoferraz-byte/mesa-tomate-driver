@@ -47,15 +47,15 @@ struct options {
 static void usage(FILE *stream, const char *program)
 {
     fprintf(stream,
-            "Uso: %s [opções]\n\n"
-            "Ativa o modo de área completa da MTM-1106/T501 (08f2:6811).\n\n"
-            "Opções:\n"
-            "  --profile digimend|mx002  Perfil de relatórios (padrão: digimend)\n"
-            "  --bus N                   Restringe ao barramento USB N\n"
-            "  --address N               Restringe ao endereço USB N\n"
-            "  --dry-run                 Mostra o que seria enviado, sem abrir USB\n"
-            "  --self-test               Valida os vetores embutidos e sai\n"
-            "  --help                    Mostra esta ajuda\n",
+            "Usage: %s [options]\n\n"
+            "Activates full-area mode for MTM-1106/T501 (08f2:6811).\n\n"
+            "Options:\n"
+            "  --profile digimend|mx002  Report profile (default: digimend)\n"
+            "  --bus N                   Restrict to USB bus N\n"
+            "  --address N               Restrict to USB address N\n"
+            "  --dry-run                 Show what would be sent without opening USB\n"
+            "  --self-test               Validate embedded vectors and exit\n"
+            "  --help                    Show this help\n",
             program);
 }
 
@@ -69,7 +69,7 @@ static int parse_profile(const char *value, enum profile *profile)
         *profile = PROFILE_MX002;
         return 0;
     }
-    fprintf(stderr, "Perfil inválido: %s (use digimend ou mx002).\n", value);
+    fprintf(stderr, "Invalid profile: %s (use digimend or mx002).\n", value);
     return -1;
 }
 
@@ -81,7 +81,7 @@ static int parse_nonnegative(const char *value, int *result, const char *name)
     errno = 0;
     parsed = strtol(value, &end, 10);
     if (errno != 0 || end == value || *end != '\0' || parsed < 0 || parsed > 255) {
-        fprintf(stderr, "%s inválido: %s\n", name, value);
+        fprintf(stderr, "Invalid %s: %s\n", name, value);
         return -1;
     }
     *result = (int)parsed;
@@ -103,7 +103,7 @@ static void print_reports(enum profile profile)
     size_t count = 0;
     const struct report *reports = selected_reports(profile, &count);
 
-    printf("VID:PID %04x:%04x, interface HID %d, wValue 0x%04x\n",
+    printf("VID:PID %04x:%04x, HID interface %d, wValue 0x%04x\n",
            MTM_VENDOR_ID, MTM_PRODUCT_ID, MTM_INTERFACE, MTM_REPORT_TYPE_AND_ID);
     for (size_t i = 0; i < count; ++i) {
         printf("report[%zu]:", i + 1);
@@ -124,15 +124,15 @@ static int self_test(void)
 
     if (count != 4 || memcmp(reports[0].bytes, expected_first, MTM_REPORT_LENGTH) != 0 ||
         memcmp(reports[3].bytes, expected_last, MTM_REPORT_LENGTH) != 0) {
-        fprintf(stderr, "Falha no vetor do perfil digimend.\n");
+        fprintf(stderr, "Profile vector failure: digimend.\n");
         return EXIT_FAILURE;
     }
     reports = selected_reports(PROFILE_MX002, &count);
     if (count != 1 || memcmp(reports[0].bytes, expected_last, MTM_REPORT_LENGTH) != 0) {
-        fprintf(stderr, "Falha no vetor do perfil mx002.\n");
+        fprintf(stderr, "Profile vector failure: mx002.\n");
         return EXIT_FAILURE;
     }
-    puts("self-test: OK; nenhum dispositivo USB foi aberto.");
+    puts("self-test: OK; no USB devices were opened.");
     return EXIT_SUCCESS;
 }
 
@@ -167,7 +167,7 @@ static int open_unique_target(libusb_context *context, const struct options *opt
     libusb_device **list = NULL;
     ssize_t count = libusb_get_device_list(context, &list);
     if (count < 0) {
-        fprintf(stderr, "Não foi possível enumerar USB: %s\n", libusb_error_name((int)count));
+        fprintf(stderr, "Could not enumerate USB: %s\n", libusb_error_name((int)count));
         return -1;
     }
 
@@ -191,14 +191,14 @@ static int open_unique_target(libusb_context *context, const struct options *opt
 
     if (matches == 0) {
         fprintf(stderr,
-                "Nenhuma MTM-1106/T501 com interface HID %d foi encontrada (%04x:%04x).\n",
+                "No MTM-1106/T501 with HID interface %d found (%04x:%04x).\n",
                 MTM_INTERFACE, MTM_VENDOR_ID, MTM_PRODUCT_ID);
         libusb_free_device_list(list, 1);
         return -1;
     }
     if (matches > 1) {
         fprintf(stderr,
-                "Foram encontradas %zu mesas compatíveis; use --bus e --address para escolher uma.\n",
+                "Found %zu compatible tablets; use --bus and --address to select one.\n",
                 matches);
         libusb_free_device_list(list, 1);
         return -1;
@@ -210,7 +210,7 @@ static int open_unique_target(libusb_context *context, const struct options *opt
     libusb_free_device_list(list, 1);
     if (rc != 0 || handle == NULL) {
         libusb_unref_device(selected);
-        fprintf(stderr, "Não foi possível abrir a mesa: %s\n", libusb_error_name(rc));
+        fprintf(stderr, "Could not open tablet: %s\n", libusb_error_name(rc));
         return -1;
     }
     *device_out = selected;
@@ -224,13 +224,13 @@ static int send_profile(libusb_device_handle *handle, enum profile profile)
     const struct report *reports = selected_reports(profile, &count);
     int rc = libusb_set_auto_detach_kernel_driver(handle, 1);
     if (rc != 0 && rc != LIBUSB_ERROR_NOT_SUPPORTED) {
-        fprintf(stderr, "Falha ao preparar detach automático: %s\n", libusb_error_name(rc));
+        fprintf(stderr, "Failed to prepare auto-detach: %s\n", libusb_error_name(rc));
         return -1;
     }
 
     rc = libusb_claim_interface(handle, MTM_INTERFACE);
     if (rc != 0) {
-        fprintf(stderr, "Não foi possível reivindicar a interface HID %d: %s\n",
+        fprintf(stderr, "Could not claim HID interface %d: %s\n",
                 MTM_INTERFACE, libusb_error_name(rc));
         return -1;
     }
@@ -242,22 +242,22 @@ static int send_profile(libusb_device_handle *handle, enum profile profile)
             MTM_INTERFACE, (unsigned char *)reports[i].bytes, MTM_REPORT_LENGTH,
             MTM_TIMEOUT_MS);
         if (transferred < 0) {
-            fprintf(stderr, "SET_REPORT %zu falhou: %s\n", i + 1, libusb_error_name(transferred));
+            fprintf(stderr, "SET_REPORT %zu failed: %s\n", i + 1, libusb_error_name(transferred));
             result = -1;
             break;
         }
         if (transferred != MTM_REPORT_LENGTH) {
-            fprintf(stderr, "SET_REPORT %zu transferiu %d/%u bytes.\n",
+            fprintf(stderr, "SET_REPORT %zu transferred %d/%u bytes.\n",
                     i + 1, transferred, MTM_REPORT_LENGTH);
             result = -1;
             break;
         }
-        printf("SET_REPORT %zu/%zu enviado.\n", i + 1, count);
+        printf("SET_REPORT %zu/%zu sent.\n", i + 1, count);
     }
 
     rc = libusb_release_interface(handle, MTM_INTERFACE);
     if (rc != 0 && result == 0) {
-        fprintf(stderr, "Aviso: não foi possível liberar a interface HID: %s\n",
+        fprintf(stderr, "Warning: could not release HID interface: %s\n",
                 libusb_error_name(rc));
         result = -1;
     }
@@ -291,11 +291,11 @@ int main(int argc, char **argv)
                 return EXIT_FAILURE;
             break;
         case 'b':
-            if (parse_nonnegative(optarg, &options.bus, "Barramento") != 0)
+            if (parse_nonnegative(optarg, &options.bus, "Bus") != 0)
                 return EXIT_FAILURE;
             break;
         case 'a':
-            if (parse_nonnegative(optarg, &options.address, "Endereço") != 0)
+            if (parse_nonnegative(optarg, &options.address, "Address") != 0)
                 return EXIT_FAILURE;
             break;
         case 'n':
@@ -323,7 +323,7 @@ int main(int argc, char **argv)
     libusb_context *context = NULL;
     int rc = libusb_init(&context);
     if (rc != 0) {
-        fprintf(stderr, "Não foi possível inicializar libusb: %s\n", libusb_error_name(rc));
+        fprintf(stderr, "Could not initialize libusb: %s\n", libusb_error_name(rc));
         return EXIT_FAILURE;
     }
 
@@ -331,7 +331,7 @@ int main(int argc, char **argv)
     libusb_device_handle *handle = NULL;
     int result = open_unique_target(context, &options, &device, &handle);
     if (result == 0) {
-        printf("Mesa encontrada no barramento %u, endereço %u.\n",
+        printf("Tablet found on bus %u, address %u.\n",
                libusb_get_bus_number(device), libusb_get_device_address(device));
         result = send_profile(handle, options.profile);
         libusb_close(handle);
@@ -340,6 +340,6 @@ int main(int argc, char **argv)
     libusb_exit(context);
 
     if (result == 0)
-        puts("Modo solicitado enviado. Valide a área com libinput e reconecte a mesa se necessário.");
+        puts("Requested mode sent. Validate area with libinput and reconnect tablet if necessary.");
     return result == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

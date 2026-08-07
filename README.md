@@ -1,44 +1,44 @@
-# MTM-1106 / T501 — ativador de área completa para Linux e NixOS
+# MTM-1106 / T501 — Full-area Mode Activator for Linux and NixOS
 
-Este projeto fornece um **ativador USB de modo**, não um novo driver de kernel. Ele foi criado para a mesa comercialmente identificada como **MTM-1106**, que aparece no Linux como `SZ PENG YI LTD. [T501]` com VID/PID `08f2:6811`. O sintoma investigado é a exposição simultânea de uma região grande para desktop e de uma região menor para Android/mobile, com o Linux usando apenas a área menor por padrão.
+This project provides a **USB mode activator**, not a new kernel driver. It was created for the tablet commercially identified as **MTM-1106**, which appears in Linux as `SZ PENG YI LTD. [T501]` with VID/PID `08f2:6811`. The investigated symptom is the simultaneous exposure of a large desktop region and a smaller Android/mobile region, with Linux using only the smaller area by default.
 
-A solução envia relatórios HID `SET_REPORT` documentados pela ferramenta [`DIGImend/10moons-tools`](https://github.com/DIGImend/10moons-tools). O perfil padrão `digimend` envia quatro relatórios de oito bytes à interface HID `2`; o perfil alternativo `mx002` envia somente o relatório central usado pelo projeto [`marvinbelfort/mx002_linux_driver`](https://github.com/marvinbelfort/mx002_linux_driver). O programa exige o VID/PID esperado, exige uma interface HID número `2`, não reseta a mesa e não modifica firmware ou descritores.
+The solution sends `SET_REPORT` HID reports documented by the [`DIGImend/10moons-tools`](https://github.com/DIGImend/10moons-tools) tool. The default `digimend` profile sends a four-report sequence of eight bytes to HID interface `2`; the alternative `mx002` profile sends only the central report used by the [`marvinbelfort/mx002_linux_driver`](https://github.com/marvinbelfort/mx002_linux_driver) project. The program requires the expected VID/PID, requires HID interface number `2`, does not reset the tablet, and does not modify firmware or descriptors.
 
-> **Estado de validação:** a sequência foi auditada contra implementações públicas para a família T501, mas ainda precisa ser executada e validada na MTM-1106 física do usuário. Não trate uma mudança no cursor como prova de sucesso; use os critérios de medição abaixo.
+> **Validation Status:** The sequence has been audited against public implementations for the T501 family but still needs to be executed and validated on the user's physical MTM-1106. Do not treat a cursor change as proof of success; use the measurement criteria below.
 
-## O que foi descoberto
+## Discoveries
 
-O arquivo `libinput.txt` fornecido pelo usuário mostra duas interfaces tablet do mesmo USB ID: uma com aproximadamente `993x585 mm` e outra com `205x137 mm`. O README do driver Windows extraído menciona separadamente `Android Mode` e `Work mode`, mas não expõe os bytes de comunicação. A ferramenta DigiMend e os drivers Linux públicos fornecem a evidência de protocolo necessária.
+The `libinput.txt` file provided by the user shows two tablet interfaces for the same USB ID: one with approximately `993x585 mm` and another with `205x137 mm`. The extracted Windows driver README separately mentions `Android Mode` and `Work mode` but does not expose the communication bytes. The DigiMend tool and public Linux drivers provide the necessary protocol evidence.
 
-A sequência completa do perfil padrão é a seguinte:
+The complete sequence for the default profile is as follows:
 
-| Ordem | Dados do relatório | Interpretação operacional |
+| Order | Report Data | Operational Interpretation |
 | --- | --- | --- |
-| 1 | `08 04 1d 01 ff ff 06 2e` | Relatório de seleção/descoberta da família T501 |
-| 2 | `08 03 00 ff f0 00 ff f0` | Relatório associado à área completa pelo driver mx002 |
-| 3 | `08 06 01 00 00 00 00 00` | Etapa intermediária da sequência DigiMend |
-| 4 | `08 03 00 ff f0 00 ff f0` | Reaplicação do relatório de área completa |
+| 1 | `08 04 1d 01 ff ff 06 2e` | Selection/discovery report for the T501 family |
+| 2 | `08 03 00 ff f0 00 ff f0` | Report associated with full area by the mx002 driver |
+| 3 | `08 06 01 00 00 00 00 00` | Intermediate step of the DigiMend sequence |
+| 4 | `08 03 00 ff f0 00 ff f0` | Re-application of the full-area report |
 
-Todos usam `bmRequestType=0x21`, `bRequest=0x09`, `wValue=0x0308`, `wIndex=2` e timeout de 250 ms. A atribuição semântica dos bytes é parcialmente inferida; o que está confirmado é a sequência observada em código público e a associação do relatório de 8 bytes a uma mudança de modo.
+All use `bmRequestType=0x21`, `bRequest=0x09`, `wValue=0x0308`, `wIndex=2`, and a 250 ms timeout. The semantic assignment of the bytes is partially inferred; what is confirmed is the sequence observed in public code and the association of the 8-byte report with a mode change.
 
-## Uso seguro antes do NixOS
+## Safe Usage Before NixOS
 
-O roteiro completo de captura antes/depois e os critérios de aceitação está em [`TESTING.md`](./TESTING.md). Use-o antes de habilitar `autoStart`.
+The full capture roadmap and acceptance criteria are in [`TESTING.md`](./TESTING.md). Use it before enabling `autoStart`.
 
-Compile e execute os testes locais:
+Compile and run local tests:
 
 ```bash
 make check
 ```
 
-O self-test não abre USB. Para apenas visualizar os bytes:
+The self-test does not open USB. To only view the bytes:
 
 ```bash
 ./mtm1106-mode --profile digimend --dry-run
 ./mtm1106-mode --profile mx002 --dry-run
 ```
 
-Antes de abrir a mesa, registre o estado inicial. Em um sistema com `libinput`, salve pelo menos:
+Before opening the tablet, record the initial state. On a system with `libinput`, save at least:
 
 ```bash
 lsusb -v -d 08f2:6811 > before-lsusb.txt
@@ -46,31 +46,31 @@ libinput debug-tablet > before-libinput.txt
 udevadm info --export-db > before-udev.txt
 ```
 
-O comando normal deve ser executado com a mesa conectada e com privilégios suficientes para reivindicar a interface HID:
+The normal command must be run with the tablet connected and with sufficient privileges to claim the HID interface:
 
 ```bash
 sudo ./mtm1106-mode --profile digimend
 ```
 
-Se a sequência completa não produzir o resultado esperado, desligue e reconecte a mesa antes de qualquer segundo experimento. Depois compare os mesmos diagnósticos. O perfil `mx002` é uma alternativa, não uma calibração: não o execute repetidamente em sequência sem reconectar o dispositivo.
+If the full sequence does not produce the expected result, disconnect and reconnect the tablet before any second experiment. Then compare the same diagnostics. The `mx002` profile is an alternative, not a calibration: do not run it repeatedly in sequence without reconnecting the device.
 
-A confirmação mínima exige que a área grande volte a ser a fonte efetiva de coordenadas, aproximadamente `993x585 mm`, e que a área `205x137 mm` deixe de ser a única interface tablet usada. Também devem ser testados pressão, os dois botões da caneta, teclas da mesa e reconexão.
+Minimum confirmation requires that the large area becomes the effective coordinate source again, approximately `993x585 mm`, and that the `205x137 mm` area stops being the only tablet interface used. Pressure, the two pen buttons, tablet keys, and reconnection must also be tested.
 
-## Integração NixOS
+## NixOS Integration
 
-O flake exporta o pacote e o módulo `nixosModules.default`. No `flake.nix` do seu `nix-conf`, adicione a entrada:
+The flake exports the package and the `nixosModules.default` module. In your `nix-conf`'s `flake.nix`, add the input:
 
 ```nix
 inputs.mesa-tomate-driver.url = "github:Joaoferraz-byte/mesa-tomate-driver";
 ```
 
-No host que possui a mesa, importe o módulo:
+In the host that has the tablet, import the module:
 
 ```nix
 self.nixosModules.mtm1106 = inputs.mesa-tomate-driver.nixosModules.default;
 ```
 
-Em seguida, inclua `self.nixosModules.mtm1106` na lista `imports` de `latitudeConfiguration` ou do host correto e mantenha a ativação automática desligada inicialmente:
+Then, include `self.nixosModules.mtm1106` in the `imports` list of `latitudeConfiguration` or the correct host and keep auto-activation disabled initially:
 
 ```nix
 services."mtm1106-mode" = {
@@ -80,13 +80,13 @@ services."mtm1106-mode" = {
 };
 ```
 
-Isso instala `mtm1106-mode` no sistema, mas exige execução manual. O primeiro teste após o rebuild é:
+This installs `mtm1106-mode` on the system but requires manual execution. The first test after rebuild is:
 
 ```bash
 sudo mtm1106-mode --profile digimend
 ```
 
-Só depois de confirmar repetidamente o comportamento físico deve ser habilitado:
+Only after repeatedly confirming physical behavior should it be enabled:
 
 ```nix
 services."mtm1106-mode" = {
@@ -96,19 +96,19 @@ services."mtm1106-mode" = {
 };
 ```
 
-Com `autoStart`, uma regra udev dispara uma unidade oneshot para `08f2:6811`. O helper se recusa a agir se não encontrar a interface HID `2` ou se houver mais de uma mesa compatível sem seleção por barramento/endereço. A unidade usa `NoNewPrivileges`, `PrivateTmp`, `ProtectHome` e `ProtectSystem`; a execução continua sendo root apenas porque a interface HID pode estar sob controle de `hid-generic`.
+With `autoStart`, a udev rule triggers a oneshot unit for `08f2:6811`. The helper refuses to act if it does not find HID interface `2` or if there is more than one compatible tablet without bus/address selection. The unit uses `NoNewPrivileges`, `PrivateTmp`, `ProtectHome`, and `ProtectSystem`; execution remains root only because the HID interface may be under the control of `hid-generic`.
 
 ## Rollback
 
-Para desativar sem alterar o restante do sistema, remova ou defina `enable = false` em `services."mtm1106-mode"`, retire o input do flake se desejar e faça um rebuild. A solução não instala módulo de kernel e não grava firmware. Se uma sessão gráfica ficar sem a mesa após um experimento, desconecte e reconecte o USB; o ativador não executa `reset` e não deve persistir uma modificação depois que a energia é removida.
+To disable without changing the rest of the system, remove or set `enable = false` in `services."mtm1106-mode"`, remove the flake input if desired, and rebuild. The solution does not install a kernel module and does not write to firmware. If a graphical session is left without the tablet after an experiment, disconnect and reconnect the USB; the activator does not execute `reset` and should not persist a modification after power is removed.
 
-## Limitações e falsos positivos
+## Limitations and False Positives
 
-O VID/PID é compartilhado por rebrands do chipset T501. Por isso o projeto não afirma que todo `08f2:6811` é uma MTM-1106, embora exija adicionalmente a interface HID `2`. A sequência não possui uma resposta de leitura padronizada que permita declarar sucesso automaticamente. A dimensão mostrada pelo libinput pode permanecer igual se a mesa não for reenumerada, se o compositor estiver usando uma interface antiga ou se o comando tiver sido enviado à interface errada.
+The VID/PID is shared by rebrands of the T501 chipset. Therefore, the project does not claim that every `08f2:6811` is an MTM-1106, although it additionally requires HID interface `2`. The sequence does not have a standardized read response that allows for automatic success declaration. The dimension shown by libinput may remain the same if the tablet is not re-enumerated, if the compositor is using an old interface, or if the command was sent to the wrong interface.
 
-O projeto não corrige pressão, rotação, mapeamento para múltiplos monitores ou a qualidade do parser de eventos. Essas são camadas posteriores. Primeiro confirme o modo USB; só depois ajuste libinput, Niri ou um driver de usuário. Não adicione uma transformação de escala para esconder uma área errada, porque isso produziria um falso positivo visual e perderia resolução física.
+The project does not fix pressure, rotation, multi-monitor mapping, or event parser quality. These are later layers. First confirm the USB mode; only then adjust libinput, Niri, or a user driver. Do not add a scale transformation to hide a wrong area, as this would produce a visual false positive and lose physical resolution.
 
-## Referências
+## References
 
 [1]: https://docs.kernel.org/hid/hidintro.html "Linux Kernel: Introduction to HID report descriptors"
 [2]: https://github.com/DIGImend/10moons-tools "DIGImend 10moons-tools"
