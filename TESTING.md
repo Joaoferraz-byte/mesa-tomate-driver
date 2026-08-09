@@ -34,7 +34,7 @@ Consider the profile confirmed only if all of the following criteria are true:
 | Identification | The device remains `08f2:6811`/`T501`; no other tablet was changed. |
 | Area | The large desktop region is the effective coordinate source, approximately `993x585 mm`; the `205x137 mm` region is not the only active area. |
 | Resolution | No artificial scaling was applied in libinput, compositor, or `xinput` to simulate the result. |
-| Events | Pressure, proximity, click, and the two pen buttons remain operational. |
+| Events | Hover emits `BTN_TOOL_PEN` without `BTN_TOUCH`; contact emits `BTN_TOUCH` only after the calibrated threshold; release and the two pen buttons remain operational. |
 | Keys | Physical buttons continue to generate expected events or, at a minimum, were not lost. |
 | Stability | Disconnecting/reconnecting does not leave the kernel, libinput, or graphical session in a broken state. |
 
@@ -59,6 +59,10 @@ sudo mtm1106-mode --profile detect
 ```
 
 The output lists every HID interface with its interrupt IN endpoint and `maxpkt`. The activator then sends the reports to the **first interface that owns an interrupt IN endpoint** and logs every firmware answer (`response: ...`) or `response: none (timeout)`. If the `response:` line never arrives on the detected interface, the firmware may ignore control reports entirely and the capture in section 1 (`lsusb -v -d 08f2:6811`, full USB trace) becomes the required evidence. Send the `detect` output together with the journal if the tablet remains inactive.
+
+## 5c. Hover versus contact
+
+Use `sudo libinput debug-events` while moving the pen toward the tablet. The hover phase must show motion/proximity events without `BTN_TOUCH` or button-down state. Touching the surface must produce `BTN_TOUCH=1`; lifting the pen must produce `BTN_TOUCH=0` before proximity leaves. The daemon uses a calibrated contact threshold of 600 because this controller reports non-zero height/pressure values while hovering.
 
 ## 6. Automatic Test on NixOS
 
