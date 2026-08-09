@@ -268,15 +268,41 @@ static int set_active_configuration(libusb_device_handle *handle)
     return 0;
 }
 
+static int claim_all_hid_interfaces(libusb_device_handle *handle,
+                                      bool *claimed_out, int max_interface)
+{
+    int claimed_count = 0;
+    for (int i = 0; i <= max_interface; ++i) {
+        int rc = libusb_claim_interface(handle, i);
+        if (rc == 0) {
+            claimed_out[claimed_count++] = (bool)i;
+        } else if (rc != LIBUSB_ERROR_BUSY && rc != LIBUSB_ERROR_NOT_FOUND) {
+            fprintf(stderr, "Warning: could not claim interface %d: %s\n",
+                    i, libusb_error_name(rc));
+        }
+    }
+    return claimed_count;
+}
+
+static void release_claimed_interfaces(libusb_device_handle *handle,
+                                       const bool *claimed, int count)
+{
+    for (int i = 0; i < count; ++i) {
+        if (libusb_release_interface(handle, (int)claimed[i]) != 0)
+            fprintf(stderr, "Warning: could not release interface %d\n", (int)claimed[i]);
+    }
+}
+
 static int send_profile_once(libusb_device_handle *handle, enum profile profile)
 {
     size_t count = 0;
     const struct report *reports = selected_reports(profile, &count);
 
-    int rc = libusb_claim_interface(handle, MTM_INTERFACE);
-    if (rc != 0) {
-        fprintf(stderr, "Could not claim HID interface %d: %s\n",
-                MTM_INTERFACE, libusb_error_name(rc));
+    bool claimed[8] = {false};
+    int claimed_count = claim_all_hid_interfaces(handle, claimed, MTM_INTERFACE);
+    if (claimed_count == 0) {
+        fprintf(stderr, "Could not claim HID interface %d: device busy or missing\n",
+                MTM_INTERFACE);
         return -1;
     }
 
@@ -300,13 +326,23 @@ static int send_profile_once(libusb_device_handle *handle, enum profile profile)
         printf("SET_REPORT %zu/%zu sent.\n", i + 1, count);
     }
 
-    rc = libusb_release_interface(handle, MTM_INTERFACE);
-    if (rc != 0 && result == 0) {
-        fprintf(stderr, "Warning: could not release HID interface: %s\n",
-                libusb_error_name(rc));
-        result = -1;
+    release_claimed_interfaces(handle, claimed, claimed_count);
+    if (result != 0)
+        return -1;
+
+    /*
+     * Hand hid-generic back the interfaces: the kernel must re-probe
+     * interface 2 to pick up the new work-mode report descriptor, which is
+     * what exposes pen proximity (hover) to libinput without a replug.
+     */
+    for (int i = 0; i <= MTM_INTERFACE; ++i) {
+        int rc = libusb_attach_kernel_driver(handle, i);
+        if (rc != 0 && rc != LIBUSB_ERROR_NOT_FOUND &&
+            rc != LIBUSB_ERROR_BUSY && rc != LIBUSB_ERROR_NOT_SUPPORTED)
+            fprintf(stderr, "Warning: could not re-attach interface %d: %s\n",
+                    i, libusb_error_name(rc));
     }
-    return result;
+    return 0;
 }
 
 /*

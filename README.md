@@ -38,7 +38,7 @@ All use `bmRequestType=0x21`, `bRequest=0x09`, `wValue=0x0308`, `wIndex=2`, and 
 
 ## PC-Mode Handshake and Robustness
 
-The tablet boots in basic mode and the vendor Windows service transitions it to work mode right after enumeration, which is why the Linux helper reproduces the same startup posture before sending the reports. The activator detaches `hid-generic` from interfaces 0-2, performs a USB device reset (as the `mx002_linux_driver` does), re-applies configuration 1, claims interface 2, sends the selected sequence, and releases the interface; if any step fails it retries up to three times with a 500 ms backoff. Reconnect the tablet if the session is left in an inconsistent state.
+The tablet boots in basic mode and the vendor Windows service transitions it to work mode right after enumeration, which is why the Linux helper reproduces the same startup posture before sending the reports. The activator detaches `hid-generic` from interfaces 0-2, performs a USB device reset (as the `mx002_linux_driver` does), re-applies configuration 1, claims **all** HID interfaces 0-2 (as the mx002 reference does), sends the selected sequence, releases the interfaces, and then re-attaches the kernel driver so the kernel re-probes interface 2 with the new work-mode descriptor, exposing pen proximity without a replug; if any step fails it retries up to three times with a 500 ms backoff. Reconnect the tablet if the session is left in an inconsistent state.
 
 ## Safe Usage Before NixOS
 

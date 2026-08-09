@@ -23,7 +23,7 @@ Use the binary installed by the flake or the local build binary. Run only once:
 sudo mtm1106-mode --profile digimend
 ```
 
-The program should report four `SET_REPORT` sent. Before sending, it detaches `hid-generic` from interfaces 0-2, performs a USB reset, and re-applies configuration 1; on failure it retries up to three times with a 500 ms backoff. If there is a persistent permission error, disconnect the tablet, fix the installation/udev, and reconnect; do not repeat the sequence on a device whose state is unclear.
+The program should report four `SET_REPORT` sent. Before sending, it detaches `hid-generic` from interfaces 0-2, performs a USB reset, re-applies configuration 1, claims all HID interfaces 0-2, and after the sequence it re-attaches the kernel driver so the kernel re-probes interface 2 (this is what exposes pen proximity without a replug); on failure it retries up to three times with a 500 ms backoff. If there is a persistent permission error, disconnect the tablet, fix the installation/udev, and reconnect; do not repeat the sequence on a device whose state is unclear.
 
 ## 3. Acceptance Criteria
 
@@ -64,6 +64,8 @@ Rebuild and observe the unit when reconnecting the tablet:
 systemctl status mtm1106-mode.service
 journalctl -u mtm1106-mode.service
 ```
+
+> **Important:** the unit is a `oneshot` triggered by a udev `ACTION=="add"` rule, so a rebuild or `switch` alone does **not** execute the activator. The tablet must be physically disconnected and reconnected (or the host rebooted) after the rebuild; otherwise `journalctl` will show nothing and the pen will remain in basic mode.
 
 If there is more than one `08f2:6811` tablet, do not enable automatic mode: the helper refuses to select between multiple devices without `--bus`/`--address`, and the udev unit should not be used in this scenario.
 
