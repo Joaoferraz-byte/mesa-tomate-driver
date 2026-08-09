@@ -279,7 +279,7 @@ static int create_uinput_device(int *fd_out)
 }
 
 static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
-                            uint16_t *last_hotkey_bits)
+                            uint16_t *last_hotkey_bits, bool *pen_in_proximity)
 {
     /*
      * 64-byte report layout (reverse-engineered from vin1060plus/mx002):
@@ -289,20 +289,36 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
      *   data[9]     pen buttons (4 = stylus, 6 = stylus2)
      *   data[11..12] tablet hotkey bitmask (active-low pairs)
      */
+    // Track pen proximity state: cursor only appears after BTN_TOOL_PEN=1
+
     if (length < 13)
         return;
 
     int x = 4095 - ((int)data[2] | ((int)data[1] << 8));
     int y = 4095 - ((int)data[4] | ((int)data[3] << 8));
     int pressure = 2047 - ((int)data[6] | ((int)data[5] << 8));
+    // data[7] carries distance: 0 = in range (hovering/touching), >0 = out of range
+    bool pen_out_of_range = ((int)data[7]) > 0;
 
     emit_uinput_event(uinput_fd, EV_ABS, ABS_X, x);
     emit_uinput_event(uinput_fd, EV_ABS, ABS_Y, y);
     emit_uinput_event(uinput_fd, EV_ABS, ABS_PRESSURE, pressure);
 
     bool touching = pressure > 0;
-    emit_uinput_event(uinput_fd, EV_KEY, BTN_TOOL_PEN, 1);
-    emit_uinput_event(uinput_fd, EV_KEY, BTN_TOUCH, touching ? 1 : 0);
+    // Cursor display requires a proper proximity lifecycle: BTN_TOOL_PEN=1 on
+    // enter, BTN_TOOL_PEN=0 on leave. Emitting it as a constant 1 confuses
+    // libinput/wayland compositors into never showing the cursor.
+    if (!*pen_in_proximity && !pen_out_of_range) {
+        emit_uinput_event(uinput_fd, EV_KEY, BTN_TOOL_PEN, 1);
+        *pen_in_proximity = true;
+    } else if (*pen_in_proximity && pen_out_of_range) {
+        emit_uinput_event(uinput_fd, EV_KEY, BTN_TOUCH, 0);
+        emit_uinput_event(uinput_fd, EV_KEY, BTN_TOOL_PEN, 0);
+        *pen_in_proximity = false;
+    }
+    if (*pen_in_proximity) {
+        emit_uinput_event(uinput_fd, EV_KEY, BTN_TOUCH, touching ? 1 : 0);
+    }
 
     uint8_t pen = data[9];
     emit_uinput_event(uinput_fd, EV_KEY, BTN_STYLUS, pen == 4 ? 1 : 0);
@@ -380,6 +396,7 @@ static int run_session(libusb_context *context, libusb_device *device,
 
     int result = 0;
     uint16_t last_hotkey_bits = 0;
+    bool pen_in_proximity = false;
     while (running) {
         uint8_t buffer[64];
         int length = 0;
@@ -407,7 +424,7 @@ static int run_session(libusb_context *context, libusb_device *device,
             continue;
         if (rc == 0 && length > 0) {
             printf("Report received: %d bytes.\n", length);
-            dispatch_report(uinput_fd, buffer, length, &last_hotkey_bits);
+            dispatch_report(uinput_fd, buffer, length, &last_hotkey_bits, &pen_in_proximity);
         }
     }
 
