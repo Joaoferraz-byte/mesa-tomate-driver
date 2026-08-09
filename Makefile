@@ -8,6 +8,14 @@ LIBUSB_LIBS := $(shell $(PKG_CONFIG) --libs libusb-1.0)
 
 .PHONY: all check clean install
 
+# Rebuild everything from source even if binaries already exist in the
+# source tree: the packaged source may carry stale or host-incompatible
+# binaries from a previous build (which would make the Nix checkPhase
+# fail with "cannot execute" on the generic-linux ELF).
+# Binaries are PHONY: always recompile, so the packaged source tree's
+# (possibly stale) build artifacts never satisfy the dependency.
+.PHONY: mtm1106-mode mtm1106-daemon
+
 all: mtm1106-mode mtm1106-daemon
 
 mtm1106-mode: src/mtm1106-mode.c
