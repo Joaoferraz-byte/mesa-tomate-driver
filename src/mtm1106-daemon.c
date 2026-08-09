@@ -338,8 +338,8 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     int y = (int)data[4] | ((int)data[3] << 8);
     int raw_pressure = ((int)data[5] << 8) | (int)data[6];
     int pressure = t501_pressure_from_raw(raw_pressure);
-    // data[7] carries distance: 0 = in range (hovering/touching), >0 = out of range
-    bool pen_out_of_range = ((int)data[7]) > 0;
+    // data[7] is a positive in-range distance/state value; zero means out of range.
+    bool pen_out_of_range = ((int)data[7]) == 0;
 
     // Emit distance first (libinput uses ABS_DISTANCE for hover detection)
     int distance = pen_out_of_range ? 0 : 10;
