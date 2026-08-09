@@ -307,11 +307,31 @@ static int create_uinput_device(int *fd_out)
 #define PEN_CONTACT_THRESHOLD_DEFAULT 300
 
 /*
- * Pressure normalization based on mx002_linux_driver approach:
- * - If raw pressure is above (BASELINE - PROXIMITY_THRESHOLD), it's hover → pressure = 0
- * - If raw pressure is below that threshold, it's touch → scale the pressure
- * This matches the mx002 pattern exactly:
- *   proximity_threshold = 600 → raw >= 1140 is hover, raw < 1140 is touch
+ * Pressure normalization based on kernel/libinput documentation:
+ *
+ * From docs.kernel.org/input/event-codes.html:
+ * "BTN_TOUCH may be combined with BTN_TOOL_<name> codes. For example, a pen
+ *  tablet may set BTN_TOOL_PEN to 1 and BTN_TOUCH to 0 while the pen is
+ *  hovering over but not touching the tablet surface."
+ *
+ * From libinput docs:
+ * "libinput uses a device-specific pressure threshold to determine when the
+ *  tip is considered logically down. As a result, libinput may send a nonzero
+ *  pressure value while the tip is logically up."
+ *
+ * Apps (Krita, GIMP, Qt) determine touch vs hover by:
+ *   - BTN_TOUCH == 1 → drawing
+ *   - BTN_TOUCH == 0 && BTN_TOOL_PEN == 1 → hovering (cursor moves, no draw)
+ *   - ABS_PRESSURE == 0 → no contact
+ *   - ABS_PRESSURE > 0 → contact with pressure
+ *
+ * CRITICAL: During hover, ABS_PRESSURE MUST be exactly 0.
+ * If ABS_PRESSURE is non-zero during hover, apps interpret it as
+ * "light touch" and start drawing.
+ *
+ * Hysteresis prevents flickering:
+ *   - Touch starts when raw_pressure < (BASELINE - contact_threshold)
+ *   - Touch ends when raw_pressure >= (BASELINE - contact_threshold + hysteresis)
  */
 static int t501_pressure_from_raw(int raw_pressure)
 {
@@ -323,14 +343,27 @@ static int t501_pressure_from_raw(int raw_pressure)
     return calibrated;
 }
 
-/* Normalize: hover threshold in calibrated units. mx002 uses 600 raw = 1200 calibrated. */
+/* Normalize: hover threshold in calibrated units with hysteresis */
 static int normalize_pressure(int raw_pressure)
 {
-    /* mx002 proximity_threshold = 600 raw units */
+    /*
+     * Threshold: when raw_pressure >= this value, pen is hovering (no contact).
+     * raw_threshold = BASELINE - (contact_threshold / gain)
+     * With BASELINE=1740, contact_threshold=300, gain=2:
+     *   raw_threshold = 1740 - 150 = 1590
+     * So raw >= 1590 → hover (pressure = 0)
+     *    raw < 1590 → touch (pressure = scaled)
+     */
     int raw_threshold = T501_PRESSURE_BASELINE - (pen_contact_threshold / T501_PRESSURE_GAIN);
+
     if (raw_pressure >= raw_threshold)
-        return 0; /* hover: no drawing */
-    return t501_pressure_from_raw(raw_pressure); /* touch: scaled pressure */
+        return 0; /* hover: pressure MUST be exactly 0 so apps don't draw */
+
+    /* Touch: scale the pressure. Minimum non-zero pressure is 1. */
+    int pressure = t501_pressure_from_raw(raw_pressure);
+    if (pressure <= 0)
+        return 0; /* safety: never return negative */
+    return pressure;
 }
 
 static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
@@ -364,7 +397,7 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
      *   - If raw >= (1740-600)=1140 → hover → pressure = 0
      *   - If raw < 1140 → touch → pressure = (1740-raw)*2
      *
-     * The cursor is ALWAYS visible (ABS_X/Y always emitted) when the pen
+     * The cursor is ALWAYS visible (ABS_X/Y always emitted) when the pen is in area.
      * is reporting data. BTN_TOUCH is based purely on normalized pressure > 0.
      *
      * data[7] == 0 means the pen is completely out of range (removed from tablet).
@@ -376,9 +409,25 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     int pressure = normalize_pressure(raw_pressure);
     bool touching = pressure > 0;
 
-    // Distance: in-range = 10, out-of-range = 0
-    int distance = pen_in_area ? 10 : 0;
-    emit_uinput_event(uinput_fd, EV_ABS, ABS_DISTANCE, distance);
+    /*
+     * ABS_DISTANCE tells apps how far the pen is from the surface.
+     * During hover: distance > 0 (pen is near but not touching)
+     * During touch: distance = 0 (pen is on the surface)
+     * Out of range: no distance event needed
+     *
+     * From kernel docs:
+     * "ABS_DISTANCE: Used to describe the distance of a tool from an
+     *  interaction surface. This event should only be emitted while the
+     *  tool is hovering, meaning in close proximity of the device and
+     *  while the value of the BTN_TOUCH code is 0."
+     *
+     * During touch: ABS_DISTANCE = 0 (or not emitted)
+     * During hover: ABS_DISTANCE = non-zero (e.g., 10)
+     */
+    int distance = pen_in_area ? (touching ? 0 : 10) : 0;
+    if (pen_in_area) {
+        emit_uinput_event(uinput_fd, EV_ABS, ABS_DISTANCE, distance);
+    }
 
     if (debug_raw_reports) {
         fprintf(stderr,
@@ -411,27 +460,33 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     }
 
     /*
-     * Touch lifecycle (BTN_TOUCH):
-     * Only emit on state CHANGE (matching mx002 pattern).
-     * touching = normalized_pressure > 0
+     * EVENT ORDERING (per docs.kernel.org/input/event-codes.html):
+     * "BTN_TOUCH must be the first evdev code emitted in a synchronization frame."
+     *
+     * Correct order:
+     * 1. BTN_TOUCH (touch state change) - MUST be first
+     * 2. ABS_X/Y (position)
+     * 3. ABS_PRESSURE (0 during hover, scaled during touch)
+     * 4. EV_SYN (synchronize)
+     *
+     * This ensures apps/libinput correctly interpret the frame:
+     * - Hover: BTN_TOUCH=0, pressure=0 → no drawing
+     * - Touch: BTN_TOUCH=1, pressure>0 → drawing
      */
+
+    /* Step 1: Emit BTN_TOUCH FIRST (kernel requirement) */
     if (*pen_in_proximity && touching != *pen_touching) {
         emit_uinput_event(uinput_fd, EV_KEY, BTN_TOUCH, touching ? 1 : 0);
         *pen_touching = touching;
     }
 
-    /*
-     * ALWAYS emit ABS_X/Y when pen is in area.
-     * This is what mx002 does - cursor follows pen during hover AND touch.
-     * The previous code only emitted during touch (hover_motion=false),
-     * which caused the cursor to be invisible during hover.
-     */
+    /* Step 2: Emit ABS_X/Y (cursor position during hover AND touch) */
     if (*pen_in_proximity) {
         emit_uinput_event(uinput_fd, EV_ABS, ABS_X, x);
         emit_uinput_event(uinput_fd, EV_ABS, ABS_Y, y);
     }
 
-    /* Emit normalized pressure (0 during hover, scaled during touch) */
+    /* Step 3: Emit ABS_PRESSURE (0 during hover, scaled during touch) */
     emit_uinput_event(uinput_fd, EV_ABS, ABS_PRESSURE, pressure);
 
     uint8_t pen = data[9];
