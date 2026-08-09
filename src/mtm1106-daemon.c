@@ -45,7 +45,7 @@
 #define MTM_SET_REPORT 0x09u
 #define MTM_REPORT_LENGTH 8u
 #define MTM_CONTROL_TRANSFER_MS 250u
-#define MTM_EVENT_TRANSFER_MS 3000u
+#define MTM_EVENT_TRANSFER_MS 120u
 #define MTM_RECONNECT_SLEEP_MS 500u
 #define MTM_RECONNECT_ATTEMPTS 200
 
@@ -341,7 +341,8 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     // data[7] is a positive in-range distance/state value; zero means out of range.
     bool pen_out_of_range = ((int)data[7]) == 0;
 
-    // Emit distance first (libinput uses ABS_DISTANCE for hover detection)
+    // Emit distance first; the firmware keeps this field at six in range.
+
     int distance = pen_out_of_range ? 0 : 10;
     emit_uinput_event(uinput_fd, EV_ABS, ABS_DISTANCE, distance);
     emit_uinput_event(uinput_fd, EV_ABS, ABS_X, x);
@@ -480,8 +481,18 @@ static int run_session(libusb_context *context, libusb_device *device,
                     data_ep, libusb_error_name(rc));
             continue;
         }
-        if (rc == LIBUSB_ERROR_TIMEOUT || rc == LIBUSB_ERROR_OVERFLOW)
+        if (rc == LIBUSB_ERROR_TIMEOUT || rc == LIBUSB_ERROR_OVERFLOW) {
+            if (pen_touching) {
+                emit_uinput_event(uinput_fd, EV_KEY, BTN_TOUCH, 0);
+                pen_touching = false;
+            }
+            if (pen_in_proximity) {
+                emit_uinput_event(uinput_fd, EV_KEY, BTN_TOOL_PEN, 0);
+                pen_in_proximity = false;
+            }
+            emit_uinput_event(uinput_fd, EV_SYN, SYN_REPORT, 0);
             continue;
+        }
         if (rc == 0 && length > 0) {
             printf("Report received: %d bytes.\n", length);
             dispatch_report(uinput_fd, buffer, length, &last_hotkey_bits, &pen_in_proximity,
