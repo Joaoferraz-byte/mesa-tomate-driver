@@ -360,8 +360,10 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     bool touching = !pen_out_of_range && pressure >= pen_contact_threshold;
     if (debug_raw_reports) {
         fprintf(stderr,
-                "MTM1106 raw: x=%d y=%d raw_pressure=%d pressure=%d distance=%u touch=%d\n",
-                x, y, raw_pressure, pressure, (unsigned)data[7], touching ? 1 : 0);
+                "MTM1106 raw: x=%d y=%d raw_pressure=%d pressure=%d distance=%u touch=%d bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                x, y, raw_pressure, pressure, (unsigned)data[7], touching ? 1 : 0,
+                data[0], data[1], data[2], data[3], data[4], data[5], data[6],
+                data[7], data[8], data[9], data[10], data[11], data[12]);
     }
     // Cursor display requires a proper proximity lifecycle: BTN_TOOL_PEN=1 on
     // enter, BTN_TOOL_PEN=0 on leave. Emitting it as a constant 1 confuses
