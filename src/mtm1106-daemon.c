@@ -247,6 +247,8 @@ static int create_uinput_device(int *fd_out)
     uidev.absmax[ABS_X] = 4095;
     uidev.absmax[ABS_Y] = 4095;
     uidev.absmax[ABS_PRESSURE] = 2047;
+    uidev.absmax[ABS_DISTANCE] = 10;
+    uidev.absmin[ABS_DISTANCE] = 0;
 
     if (write(fd, &uidev, sizeof(uidev)) != sizeof(uidev)) {
         fprintf(stderr, "uinput write failed: %s\n", strerror(errno));
@@ -259,6 +261,7 @@ static int create_uinput_device(int *fd_out)
     ioctl(fd, UI_SET_ABSBIT, ABS_X);
     ioctl(fd, UI_SET_ABSBIT, ABS_Y);
     ioctl(fd, UI_SET_ABSBIT, ABS_PRESSURE);
+    ioctl(fd, UI_SET_ABSBIT, ABS_DISTANCE);
     ioctl(fd, UI_SET_KEYBIT, BTN_TOOL_PEN);
     ioctl(fd, UI_SET_KEYBIT, BTN_TOUCH);
     ioctl(fd, UI_SET_KEYBIT, BTN_STYLUS);
@@ -300,6 +303,9 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     // data[7] carries distance: 0 = in range (hovering/touching), >0 = out of range
     bool pen_out_of_range = ((int)data[7]) > 0;
 
+    // Emit distance first (libinput uses ABS_DISTANCE for hover detection)
+    int distance = pen_out_of_range ? 0 : 10;
+    emit_uinput_event(uinput_fd, EV_ABS, ABS_DISTANCE, distance);
     emit_uinput_event(uinput_fd, EV_ABS, ABS_X, x);
     emit_uinput_event(uinput_fd, EV_ABS, ABS_Y, y);
     emit_uinput_event(uinput_fd, EV_ABS, ABS_PRESSURE, pressure);
