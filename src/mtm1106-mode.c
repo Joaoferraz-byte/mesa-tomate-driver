@@ -354,9 +354,35 @@ static void release_claimed_interfaces(libusb_device_handle *handle,
  * at runtime because the MTM-1106 may expose the control interface at a
  * different index than the reference tablets.
  */
+/*
+ * Prefer the 64-byte interface: per the vin1060plus documentation the
+ * full "PC" area lives on the interface whose interrupt IN endpoint
+ * carries 64-byte reports, while the 8-byte one is the restricted
+ * mobile area. Fall back to any interface with an interrupt IN
+ * endpoint, then to the first HID interface found.
+ */
+/* Snapshot the info of the selected control interface from the list. */
+static struct hid_iface_info interfaces_snapshot(
+    const struct hid_iface_info *interfaces, int count, int control_interface)
+{
+    for (int i = 0; i < count; ++i) {
+        if (interfaces[i].interface == control_interface)
+            return interfaces[i];
+    }
+    struct hid_iface_info fallback = { .interface = control_interface, .interrupt_ep = 0x81 };
+    return fallback;
+}
+
 static int find_control_interface(const struct hid_iface_info *interfaces,
                                   int count, int *control_out)
 {
+    for (int i = 0; i < count; ++i) {
+        if (interfaces[i].has_interrupt_in &&
+            interfaces[i].interrupt_wMaxPacketSize >= 64) {
+            *control_out = interfaces[i].interface;
+            return 0;
+        }
+    }
     for (int i = 0; i < count; ++i) {
         if (interfaces[i].has_interrupt_in) {
             *control_out = interfaces[i].interface;
@@ -388,6 +414,7 @@ static int detect_mode(libusb_device_handle *handle, const struct options *optio
 }
 
 static int send_profile_once(libusb_device_handle *handle, enum profile profile,
+                             const struct hid_iface_info *interfaces, int iface_count,
                              int control_interface)
 {
     size_t count = 0;
@@ -427,8 +454,10 @@ static int send_profile_once(libusb_device_handle *handle, enum profile profile,
          * interface and that the mode handshake completed.
          */
         uint8_t buffer[64];
-        int got = libusb_interrupt_transfer(handle, 0x81, buffer, sizeof(buffer),
-                                            NULL, MTM_READ_TIMEOUT_MS);
+        struct hid_iface_info control_info = interfaces_snapshot(interfaces, iface_count,
+                                                                 control_interface);
+        int got = libusb_interrupt_transfer(handle, control_info.interrupt_ep, buffer,
+                                            sizeof(buffer), NULL, MTM_READ_TIMEOUT_MS);
         if (got > 0) {
             printf("response:");
             for (int k = 0; k < got; ++k)
@@ -505,17 +534,20 @@ static void reprobe_device(libusb_device_handle *handle)
  * and send the profile sequence. Returns 0 on success, -1 otherwise.
  */
 static int attempt_activation(libusb_device_handle *handle, enum profile profile,
-                                int control_interface, int num_interfaces)
+                              const struct hid_iface_info *interfaces, int iface_count,
+                              int control_interface, int num_interfaces)
 {
     detach_all_kernel_drivers(handle, num_interfaces);
     reset_device(handle);
     if (set_active_configuration(handle) != 0)
         return -1;
-    return send_profile_once(handle, profile, control_interface);
+    return send_profile_once(handle, profile, interfaces, iface_count,
+                             control_interface);
 }
 
 static int send_profile(libusb_device_handle *handle, enum profile profile,
-                          int control_interface, int num_interfaces)
+                        const struct hid_iface_info *interfaces, int iface_count,
+                        int control_interface, int num_interfaces)
 {
     int rc = libusb_set_auto_detach_kernel_driver(handle, 1);
     if (rc != 0 && rc != LIBUSB_ERROR_NOT_SUPPORTED) {
@@ -524,7 +556,8 @@ static int send_profile(libusb_device_handle *handle, enum profile profile,
     }
 
     for (int attempt = 1; attempt <= MTM_MAX_ATTEMPTS; ++attempt) {
-        int result = attempt_activation(handle, profile, control_interface,
+        int result = attempt_activation(handle, profile, interfaces,
+                                        iface_count, control_interface,
                                         num_interfaces);
         if (result == 0) {
             if (attempt > 1)
@@ -626,17 +659,10 @@ int main(int argc, char **argv)
                     "Warning: no HID interface with interrupt IN endpoint found; "
                     "falling back to interface %d (run --profile detect to inspect).\n",
                     control_interface);
-        else {
+        else
             printf("Control interface: %d (interrupt IN on 0x%02x, max packet %u bytes).\n",
                    control_interface, interfaces[0].interrupt_ep,
                    interfaces[0].interrupt_wMaxPacketSize);
-            if (interfaces[0].interrupt_wMaxPacketSize < 64)
-                fprintf(stderr,
-                        "Warning: the control interface reports only %u bytes per packet; "
-                        "the full-area (PC) mode needs the 64-byte interface. "
-                        "Use --reprobe or switch USB ports if the active area stays small.\n",
-                        interfaces[0].interrupt_wMaxPacketSize);
-        }
 
         struct libusb_config_descriptor *config = NULL;
         int num_interfaces = control_interface + 1;
@@ -649,7 +675,8 @@ int main(int argc, char **argv)
         if (options.profile == PROFILE_DETECT) {
             result = detect_mode(handle, &options);
         } else {
-            result = send_profile(handle, options.profile, control_interface,
+            result = send_profile(handle, options.profile, interfaces,
+                                  iface_count, control_interface,
                                   num_interfaces);
             if (result == 0 && options.reprobe)
                 reprobe_device(handle);
