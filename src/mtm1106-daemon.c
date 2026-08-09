@@ -345,16 +345,23 @@ static int run_session(libusb_context *context, libusb_device *device,
     if (num_interfaces < 1)
         num_interfaces = 1;
 
-    libusb_reset_device(handle);
-    libusb_set_configuration(handle, 1);
-
+    /*
+     * Avoid resetting the device here: a reset re-enumerates the tablet
+     * while we still hold the handle, which made every following
+     * interrupt transfer fail with PIPE and triggered the false
+     * "disconnected/reappeared" storm seen in the journal. The claim
+     * below detaches the kernel drivers we need, which is sufficient.
+     */
     bool claimed[8] = {false};
-    if (claim_all(handle, num_interfaces, claimed) == 0) {
+    int claim_count = claim_all(handle, num_interfaces, claimed);
+    if (claim_count == 0) {
         fprintf(stderr, "Could not claim any interface; the kernel owns them.\n");
         release_all(handle, claimed, num_interfaces);
         libusb_close(handle);
         return -1;
     }
+    printf("Claimed %d of %d interfaces (kernel keeps the rest).\n",
+           claim_count, num_interfaces);
 
     if (send_mode_switch(handle) != 0) {
         release_all(handle, claimed, num_interfaces);
@@ -378,16 +385,30 @@ static int run_session(libusb_context *context, libusb_device *device,
         int length = 0;
         rc = libusb_interrupt_transfer(handle, data_ep, buffer, sizeof(buffer),
                                        &length, MTM_EVENT_TRANSFER_MS);
-        if (rc == LIBUSB_ERROR_NO_DEVICE || rc == LIBUSB_ERROR_IO ||
-            rc == LIBUSB_ERROR_PIPE) {
+        if (rc == LIBUSB_ERROR_NO_DEVICE) {
             puts("Tablet disconnected; waiting for reconnection...");
             result = -1;
             break;
         }
+        if (rc == LIBUSB_ERROR_IO || rc == LIBUSB_ERROR_PIPE) {
+            /*
+             * IO/PIPE is not necessarily a disconnect: it also happens
+             * when the kernel re-attached one of the interfaces we
+             * claimed or after a mid-session reset. Log it so the false
+             * "disconnected/reappeared" storm (seen with the old reset
+             * logic) can be diagnosed, then retry instead of tearing
+             * down the session.
+             */
+            fprintf(stderr, "Endpoint 0x%02x transfer error: %s\n",
+                    data_ep, libusb_error_name(rc));
+            continue;
+        }
         if (rc == LIBUSB_ERROR_TIMEOUT || rc == LIBUSB_ERROR_OVERFLOW)
             continue;
-        if (rc == 0 && length > 0)
+        if (rc == 0 && length > 0) {
+            printf("Report received: %d bytes.\n", length);
             dispatch_report(uinput_fd, buffer, length, &last_hotkey_bits);
+        }
     }
 
     release_all(handle, claimed, num_interfaces);
