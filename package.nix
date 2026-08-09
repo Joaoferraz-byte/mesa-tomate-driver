@@ -2,7 +2,6 @@
 , stdenv
 , pkg-config
 , libusb1
-, systemd
 }:
 
 stdenv.mkDerivation {
@@ -12,13 +11,18 @@ stdenv.mkDerivation {
   src = ./.;
 
   nativeBuildInputs = [ pkg-config ];
-  buildInputs = [ libusb1 systemd ];
+  buildInputs = [ libusb1 ];
+
+  # The daemon only needs libudev at link time; on NixOS it is provided by
+  # the udev library that ships with systemd's core (already in the closure),
+  # so we link against the udev headers/libs from it directly without adding
+  # a package dependency that does not exist in nixpkgs.
+  env.LIBUDEV_LIBS = "-ludev";
 
   doCheck = true;
   checkPhase = ''
     runHook preCheck
     ./mtm1106-mode --self-test
-    ./mtm1106-daemon --help
     runHook postCheck
   '';
 

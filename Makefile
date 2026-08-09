@@ -5,6 +5,8 @@ CPPFLAGS ?=
 LDFLAGS ?=
 LIBUSB_CFLAGS := $(shell $(PKG_CONFIG) --cflags libusb-1.0)
 LIBUSB_LIBS := $(shell $(PKG_CONFIG) --libs libusb-1.0)
+LIBUDEV_LIBS := $(shell $(PKG_CONFIG) --libs libudev)
+LIBUDEV_CFLAGS := $(shell $(PKG_CONFIG) --cflags libudev)
 
 .PHONY: all check clean install
 
@@ -26,4 +28,4 @@ clean:
 	rm -f mtm1106-mode mtm1106-daemon
 
 mtm1106-daemon: src/mtm1106-daemon.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LIBUSB_CFLAGS) $< $(LDFLAGS) $(LIBUSB_LIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LIBUSB_CFLAGS) $(LIBUDEV_CFLAGS) $< $(LDFLAGS) $(LIBUSB_LIBS) $(LIBUDEV_LIBS) -o $@
