@@ -62,7 +62,16 @@ The output lists every HID interface with its interrupt IN endpoint and `maxpkt`
 
 ## 5c. Hover versus contact
 
-Use `sudo libinput debug-events` while moving the pen toward the tablet. The hover phase must show motion/proximity events without `BTN_TOUCH` or button-down state. Touching the surface must produce `BTN_TOUCH=1`; lifting the pen must produce `BTN_TOUCH=0` before proximity leaves. The daemon uses a calibrated contact threshold of 600 because this controller reports non-zero height/pressure values while hovering.
+Use `sudo libinput debug-events` while moving the pen toward the tablet. The hover phase must show motion/proximity events without `BTN_TOUCH` or button-down state. Touching the surface must produce `BTN_TOUCH=1`; lifting the pen must produce `BTN_TOUCH=0` before proximity leaves.
+
+The daemon uses a conservative fallback threshold of 1400, but the correct value must be measured on the actual firmware. Enable raw diagnostics during calibration:
+
+```bash
+sudo systemctl stop mtm1106-mode.service
+sudo MTM1106_DEBUG_RAW=1 MTM1106_CONTACT_THRESHOLD=1400 /usr/local/bin/mtm1106-daemon
+```
+
+Record `raw_pressure`, `pressure`, `distance` and `touch` while the pen is out of range, hovering at several heights, barely touching and pressing normally. Choose a threshold strictly above the maximum hover pressure and below the minimum intentional-touch pressure, then set `MTM1106_CONTACT_THRESHOLD` in the systemd service environment. Do not treat the value `600` from another tablet model as a calibration for MTM-1106.
 
 ## 6. Automatic Test on NixOS
 

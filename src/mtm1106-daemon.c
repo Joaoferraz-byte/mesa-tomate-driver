@@ -69,6 +69,8 @@ static const uint8_t hotkey_keycodes[12] = {
 };
 
 static volatile sig_atomic_t running = 1;
+static int pen_contact_threshold = 1400;
+static bool debug_raw_reports = false;
 
 static void signal_handler(int signum)
 {
@@ -297,9 +299,10 @@ static int create_uinput_device(int *fd_out)
     return 0;
 }
 
-/* The reference driver uses a calibrated contact threshold because the
- * controller reports height/pressure values while the pen is hovering. */
-#define PEN_CONTACT_THRESHOLD 600
+/* The controller reports non-zero values while hovering. 1400 is only a
+ * conservative fallback; MTM1106_CONTACT_THRESHOLD can override it after
+ * measuring this firmware's raw hover/contact distributions. */
+#define PEN_CONTACT_THRESHOLD_DEFAULT 1400
 
 static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
                             uint16_t *last_hotkey_bits, bool *pen_in_proximity,
@@ -322,7 +325,8 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     // Do not reverse both axes: that rotates the tablet by 180 degrees.
     int x = (int)data[2] | ((int)data[1] << 8);
     int y = (int)data[4] | ((int)data[3] << 8);
-    int pressure = 2047 - ((int)data[6] | ((int)data[5] << 8));
+    int raw_pressure = (int)data[5] | ((int)data[6] << 8);
+    int pressure = 2047 - raw_pressure;
     // data[7] carries distance: 0 = in range (hovering/touching), >0 = out of range
     bool pen_out_of_range = ((int)data[7]) > 0;
 
@@ -336,7 +340,12 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     // A positive value is not enough: hover reports contain non-zero
     // height/pressure values. Only values at or above the calibrated contact
     // threshold may assert BTN_TOUCH.
-    bool touching = pressure >= PEN_CONTACT_THRESHOLD;
+    bool touching = !pen_out_of_range && pressure >= pen_contact_threshold;
+    if (debug_raw_reports) {
+        fprintf(stderr,
+                "MTM1106 raw: x=%d y=%d raw_pressure=%d pressure=%d distance=%u touch=%d\n",
+                x, y, raw_pressure, pressure, (unsigned)data[7], touching ? 1 : 0);
+    }
     // Cursor display requires a proper proximity lifecycle: BTN_TOOL_PEN=1 on
     // enter, BTN_TOOL_PEN=0 on leave. Emitting it as a constant 1 confuses
     // libinput/wayland compositors into never showing the cursor.
@@ -483,7 +492,10 @@ static void usage(FILE *stream, const char *program)
             "The kernel hid-generic driver is bypassed, so the 8-byte mobile-area\n"
             "descriptor it caches does not restrict the active area.\n\n"
             "Options:\n"
-            "  --help    Show this help\n",
+            "  --help    Show this help\n"
+            "\nEnvironment:\n"
+            "  MTM1106_CONTACT_THRESHOLD  Pressure threshold for BTN_TOUCH (default: 1400)\n"
+            "  MTM1106_DEBUG_RAW=1        Log raw pressure/distance for calibration\n",
             program);
 }
 
@@ -497,6 +509,18 @@ int main(int argc, char **argv)
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0},
     };
+
+    const char *threshold_env = getenv("MTM1106_CONTACT_THRESHOLD");
+    if (threshold_env != NULL && threshold_env[0] != '\0') {
+        char *end = NULL;
+        long value = strtol(threshold_env, &end, 10);
+        if (end != threshold_env && *end == '\0' && value >= 0 && value <= 2047)
+            pen_contact_threshold = (int)value;
+    } else {
+        pen_contact_threshold = PEN_CONTACT_THRESHOLD_DEFAULT;
+    }
+    debug_raw_reports = getenv("MTM1106_DEBUG_RAW") != NULL &&
+                        strcmp(getenv("MTM1106_DEBUG_RAW"), "0") != 0;
 
     int option;
     while ((option = getopt_long(argc, argv, "h", long_options, NULL)) != -1) {
