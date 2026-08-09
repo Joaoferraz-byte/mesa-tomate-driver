@@ -23,7 +23,7 @@ Use the binary installed by the flake or the local build binary. Run only once:
 sudo mtm1106-mode --profile digimend
 ```
 
-The program should report four `SET_REPORT` sent, without resetting the tablet. If there is a permission error, disconnect the tablet, fix the installation/udev, and reconnect; do not repeat the sequence on a device whose state is unclear.
+The program should report four `SET_REPORT` sent. Before sending, it detaches `hid-generic` from interfaces 0-2, performs a USB reset, and re-applies configuration 1; on failure it retries up to three times with a 500 ms backoff. If there is a persistent permission error, disconnect the tablet, fix the installation/udev, and reconnect; do not repeat the sequence on a device whose state is unclear.
 
 ## 3. Acceptance Criteria
 

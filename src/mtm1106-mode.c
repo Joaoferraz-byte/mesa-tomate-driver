@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define MTM_VENDOR_ID 0x08f2u
 #define MTM_PRODUCT_ID 0x6811u
@@ -15,6 +16,8 @@
 #define MTM_SET_REPORT 0x09u
 #define MTM_REPORT_LENGTH 8u
 #define MTM_TIMEOUT_MS 250u
+#define MTM_MAX_ATTEMPTS 3
+#define MTM_RETRY_SLEEP_MS 500u
 
 struct report {
     const uint8_t bytes[MTM_REPORT_LENGTH];
@@ -48,7 +51,7 @@ static void usage(FILE *stream, const char *program)
 {
     fprintf(stream,
             "Usage: %s [options]\n\n"
-            "Activates full-area mode for MTM-1106/T501 (08f2:6811).\n\n"
+            "Activates full-area (PC) mode for MTM-1106/T501 (08f2:6811).\n\n"
             "Options:\n"
             "  --profile digimend|mx002  Report profile (default: digimend)\n"
             "  --bus N                   Restrict to USB bus N\n"
@@ -218,17 +221,59 @@ static int open_unique_target(libusb_context *context, const struct options *opt
     return 0;
 }
 
-static int send_profile(libusb_device_handle *handle, enum profile profile)
+/*
+ * Detach hid-generic from every interface so libusb can claim the target.
+ * Failure to detach is non-fatal (interface may be free already).
+ */
+static void detach_all_kernel_drivers(libusb_device_handle *handle)
+{
+    for (int i = 0; i <= MTM_INTERFACE; ++i) {
+        int rc = libusb_detach_kernel_driver(handle, i);
+        if (rc != 0 && rc != LIBUSB_ERROR_NOT_FOUND &&
+            rc != LIBUSB_ERROR_NOT_SUPPORTED) {
+            fprintf(stderr, "Warning: could not detach kernel driver from interface %d: %s\n",
+                    i, libusb_error_name(rc));
+        }
+    }
+}
+
+/*
+ * USB-level reset forces the tablet back to a clean enumeration state,
+ * matching the reset performed by the Windows service startup path and the
+ * mx002 reference driver. A reset failure is non-fatal.
+ */
+static void reset_device(libusb_device_handle *handle)
+{
+    int rc = libusb_reset_device(handle);
+    if (rc != 0 && rc != LIBUSB_ERROR_NOT_FOUND) {
+        fprintf(stderr, "Warning: device reset failed (%s); continuing anyway.\n",
+                libusb_error_name(rc));
+    }
+    usleep(300 * 1000);
+}
+
+/*
+ * Re-select the first configuration: after a reset the tablet re-enumerates
+ * and configuration 1 (full work mode) must be active, as on Windows where
+ * the vendor service claims the device right after enumeration.
+ */
+static int set_active_configuration(libusb_device_handle *handle)
+{
+    int rc = libusb_set_configuration(handle, 1);
+    if (rc != 0 && rc != LIBUSB_ERROR_BUSY) {
+        fprintf(stderr, "Warning: could not set configuration 1: %s\n",
+                libusb_error_name(rc));
+        return -1;
+    }
+    return 0;
+}
+
+static int send_profile_once(libusb_device_handle *handle, enum profile profile)
 {
     size_t count = 0;
     const struct report *reports = selected_reports(profile, &count);
-    int rc = libusb_set_auto_detach_kernel_driver(handle, 1);
-    if (rc != 0 && rc != LIBUSB_ERROR_NOT_SUPPORTED) {
-        fprintf(stderr, "Failed to prepare auto-detach: %s\n", libusb_error_name(rc));
-        return -1;
-    }
 
-    rc = libusb_claim_interface(handle, MTM_INTERFACE);
+    int rc = libusb_claim_interface(handle, MTM_INTERFACE);
     if (rc != 0) {
         fprintf(stderr, "Could not claim HID interface %d: %s\n",
                 MTM_INTERFACE, libusb_error_name(rc));
@@ -262,6 +307,44 @@ static int send_profile(libusb_device_handle *handle, enum profile profile)
         result = -1;
     }
     return result;
+}
+
+/*
+ * Full activation attempt: detach kernel drivers, reset, reconfigure, claim
+ * and send the profile sequence. Returns 0 on success, -1 otherwise.
+ */
+static int attempt_activation(libusb_device_handle *handle, enum profile profile)
+{
+    detach_all_kernel_drivers(handle);
+    reset_device(handle);
+    if (set_active_configuration(handle) != 0)
+        return -1;
+    return send_profile_once(handle, profile);
+}
+
+static int send_profile(libusb_device_handle *handle, enum profile profile)
+{
+    int rc = libusb_set_auto_detach_kernel_driver(handle, 1);
+    if (rc != 0 && rc != LIBUSB_ERROR_NOT_SUPPORTED) {
+        fprintf(stderr, "Failed to prepare auto-detach: %s\n", libusb_error_name(rc));
+        return -1;
+    }
+
+    for (int attempt = 1; attempt <= MTM_MAX_ATTEMPTS; ++attempt) {
+        int result = attempt_activation(handle, profile);
+        if (result == 0) {
+            if (attempt > 1)
+                printf("Activation succeeded on attempt %d.\n", attempt);
+            return 0;
+        }
+        if (attempt < MTM_MAX_ATTEMPTS) {
+            fprintf(stderr, "Attempt %d failed; retrying in %u ms...\n",
+                    attempt, MTM_RETRY_SLEEP_MS);
+            usleep(MTM_RETRY_SLEEP_MS * 1000);
+        }
+    }
+    fprintf(stderr, "All %d activation attempts failed.\n", MTM_MAX_ATTEMPTS);
+    return -1;
 }
 
 int main(int argc, char **argv)

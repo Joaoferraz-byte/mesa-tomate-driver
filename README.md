@@ -2,7 +2,9 @@
 
 This project provides a **USB mode activator**, not a new kernel driver. It was created for the tablet commercially identified as **MTM-1106**, which appears in Linux as `SZ PENG YI LTD. [T501]` with VID/PID `08f2:6811`. The investigated symptom is the simultaneous exposure of a large desktop region and a smaller Android/mobile region, with Linux using only the smaller area by default.
 
-The solution sends `SET_REPORT` HID reports documented by the [`DIGImend/10moons-tools`](https://github.com/DIGImend/10moons-tools) tool. The default `digimend` profile sends a four-report sequence of eight bytes to HID interface `2`; the alternative `mx002` profile sends only the central report used by the [`marvinbelfort/mx002_linux_driver`](https://github.com/marvinbelfort/mx002_linux_driver) project. The program requires the expected VID/PID, requires HID interface number `2`, does not reset the tablet, and does not modify firmware or descriptors.
+The solution sends `SET_REPORT` HID reports documented by the [`DIGImend/10moons-tools`](https://github.com/DIGImend/10moons-tools) tool. The default `digimend` profile sends a four-report sequence of eight bytes to HID interface `2`; the alternative `mx002` profile sends only the central report used by the [`marvinbelfort/mx002_linux_driver`](https://github.com/marvinbelfort/mx002_linux_driver) project. The program requires the expected VID/PID and HID interface number `2`, and does not modify firmware or descriptors.
+
+Both payloads were cross-validated byte-by-byte against three independent public implementations (DIGImend's `10moons-tools`, `mx002_linux_driver`, and `10moons-driver-vin1060plus`), which all send the same reports with `bmRequestType=0x21`, `bRequest=0x09`, `wValue=0x0308`, `wIndex=2`, and a 250 ms timeout. The vendor Windows driver (`TabletCom_vc.dll`) embeds no readable payload literals, so the public implementations are the authoritative source; a `usbmon` capture under Windows remains the ultimate confirmation.
 
 > **Validation Status:** The sequence has been audited against public implementations for the T501 family but still needs to be executed and validated on the user's physical MTM-1106. Do not treat a cursor change as proof of success; use the measurement criteria below.
 
@@ -33,6 +35,10 @@ The complete sequence for the default profile is as follows:
 | 4 | `08 03 00 ff f0 00 ff f0` | Re-application of the full-area report |
 
 All use `bmRequestType=0x21`, `bRequest=0x09`, `wValue=0x0308`, `wIndex=2`, and a 250 ms timeout. The semantic assignment of the bytes is partially inferred; what is confirmed is the sequence observed in public code and the association of the 8-byte report with a mode change.
+
+## PC-Mode Handshake and Robustness
+
+The tablet boots in basic mode and the vendor Windows service transitions it to work mode right after enumeration, which is why the Linux helper reproduces the same startup posture before sending the reports. The activator detaches `hid-generic` from interfaces 0-2, performs a USB device reset (as the `mx002_linux_driver` does), re-applies configuration 1, claims interface 2, sends the selected sequence, and releases the interface; if any step fails it retries up to three times with a 500 ms backoff. Reconnect the tablet if the session is left in an inconsistent state.
 
 ## Safe Usage Before NixOS
 
