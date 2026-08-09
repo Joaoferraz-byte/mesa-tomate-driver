@@ -232,11 +232,12 @@ static int create_uinput_device(int *fd_out)
 
     /*
      * Kernel-side uinput state machine (uinput.c): UI_DEV_CREATE only
-     * succeeds when the device reached UIST_SETUP_COMPLETE, which is
-     * reached either by writing a uinput_user_dev OR by UI_DEV_SETUP.
-     * Using both (write first, then UI_DEV_SETUP) matches what libevdev
-     * and the working mx002 driver do, and gives us per-axis absinfo via
-     * UI_ABS_SETUP afterwards, each with its own errno logging.
+     * succeeds when the device reached UIST_SETUP_COMPLETE, which the
+     * write of the uinput_user_dev below triggers. This minimal
+     * sequence (write + SET bits + CREATE, no UI_ABS_SETUP) is the one
+     * used by the working mx002 driver; UI_ABS_SETUP proved to fail
+     * with EFAULT/EINVAL on the user's kernel because the ioctl macro
+     * in the build headers does not match the running kernel.
      */
     struct uinput_user_dev uidev = {0};
     snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "MTM-1106 Pen");
@@ -266,18 +267,6 @@ static int create_uinput_device(int *fd_out)
         if (hotkey_keycodes[i] != 0)
             ioctl(fd, UI_SET_KEYBIT, hotkey_keycodes[i]);
     }
-
-    struct input_absinfo x_info = { .minimum = 0, .maximum = 4095,
-                                    .resolution = 25 };
-    struct input_absinfo y_info = { .minimum = 0, .maximum = 4095,
-                                    .resolution = 25 };
-    struct input_absinfo pressure_info = { .minimum = 0, .maximum = 2047 };
-    if (ioctl(fd, UI_ABS_SETUP, ABS_X, &x_info) != 0)
-        fprintf(stderr, "UI_ABS_SETUP ABS_X failed: %s\n", strerror(errno));
-    if (ioctl(fd, UI_ABS_SETUP, ABS_Y, &y_info) != 0)
-        fprintf(stderr, "UI_ABS_SETUP ABS_Y failed: %s\n", strerror(errno));
-    if (ioctl(fd, UI_ABS_SETUP, ABS_PRESSURE, &pressure_info) != 0)
-        fprintf(stderr, "UI_ABS_SETUP PRESSURE failed: %s\n", strerror(errno));
 
     if (ioctl(fd, UI_DEV_CREATE) != 0) {
         fprintf(stderr, "Could not create uinput device: %s\n", strerror(errno));
