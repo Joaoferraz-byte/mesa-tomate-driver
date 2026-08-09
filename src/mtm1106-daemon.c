@@ -69,8 +69,9 @@ static const uint8_t hotkey_keycodes[12] = {
 };
 
 static volatile sig_atomic_t running = 1;
-static int pen_contact_threshold = 1400;
+static int pen_contact_threshold = 300;
 static bool debug_raw_reports = false;
+static bool hover_motion = false;
 
 static void signal_handler(int signum)
 {
@@ -342,16 +343,12 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     bool pen_out_of_range = ((int)data[7]) == 0;
 
     // Emit distance first; the firmware keeps this field at six in range.
-
     int distance = pen_out_of_range ? 0 : 10;
     emit_uinput_event(uinput_fd, EV_ABS, ABS_DISTANCE, distance);
-    emit_uinput_event(uinput_fd, EV_ABS, ABS_X, x);
-    emit_uinput_event(uinput_fd, EV_ABS, ABS_Y, y);
-    emit_uinput_event(uinput_fd, EV_ABS, ABS_PRESSURE, pressure);
 
-    // A positive value is not enough: hover reports contain non-zero
-    // height/pressure values. Only values at or above the calibrated contact
-    // threshold may assert BTN_TOUCH.
+    // Hover reports contain non-zero pressure but must not move the drawing tool.
+    // Only contact reports send absolute motion unless hover motion is enabled.
+    // A positive value is not enough: only the calibrated threshold may assert BTN_TOUCH.
     bool touching = !pen_out_of_range && pressure >= pen_contact_threshold;
     if (debug_raw_reports) {
         fprintf(stderr,
@@ -379,6 +376,11 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
         emit_uinput_event(uinput_fd, EV_KEY, BTN_TOUCH, touching ? 1 : 0);
         *pen_touching = touching;
     }
+    if (touching || hover_motion) {
+        emit_uinput_event(uinput_fd, EV_ABS, ABS_X, x);
+        emit_uinput_event(uinput_fd, EV_ABS, ABS_Y, y);
+    }
+    emit_uinput_event(uinput_fd, EV_ABS, ABS_PRESSURE, touching ? pressure : 0);
 
     uint8_t pen = data[9];
     emit_uinput_event(uinput_fd, EV_KEY, BTN_STYLUS, pen == 4 ? 1 : 0);
@@ -518,8 +520,9 @@ static void usage(FILE *stream, const char *program)
             "Options:\n"
             "  --help    Show this help\n"
             "\nEnvironment:\n"
-            "  MTM1106_CONTACT_THRESHOLD  Pressure threshold for BTN_TOUCH (default: 1400)\n"
-            "  MTM1106_DEBUG_RAW=1        Log raw pressure/distance for calibration\n",
+            "  MTM1106_CONTACT_THRESHOLD  Pressure threshold for BTN_TOUCH (default: 300)\n"
+            "  MTM1106_DEBUG_RAW=1        Log raw pressure/distance for calibration\n"
+            "  MTM1106_HOVER_MOTION=1    Allow cursor motion while hovering\n",
             program);
 }
 
@@ -545,6 +548,8 @@ int main(int argc, char **argv)
     }
     debug_raw_reports = getenv("MTM1106_DEBUG_RAW") != NULL &&
                         strcmp(getenv("MTM1106_DEBUG_RAW"), "0") != 0;
+    hover_motion = getenv("MTM1106_HOVER_MOTION") != NULL &&
+                   strcmp(getenv("MTM1106_HOVER_MOTION"), "0") != 0;
 
     int option;
     while ((option = getopt_long(argc, argv, "h", long_options, NULL)) != -1) {
