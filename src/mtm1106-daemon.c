@@ -302,8 +302,8 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
 {
     /*
      * 64-byte report layout (reverse-engineered from vin1060plus/mx002):
-     *   data[1..2]  X axis little-endian (4095 - raw)
-     *   data[3..4]  Y axis little-endian (4095 - raw)
+     *   data[1..2]  X axis little-endian (raw coordinate)
+     *   data[3..4]  Y axis little-endian (raw coordinate)
      *   data[5..6]  pressure (2047 - raw)
      *   data[9]     pen buttons (4 = stylus, 6 = stylus2)
      *   data[11..12] tablet hotkey bitmask (active-low pairs)
@@ -313,8 +313,10 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     if (length < 13)
         return;
 
-    int x = 4095 - ((int)data[2] | ((int)data[1] << 8));
-    int y = 4095 - ((int)data[4] | ((int)data[3] << 8));
+    // The firmware's raw origin matches the physical top-left corner.
+    // Do not reverse both axes: that rotates the tablet by 180 degrees.
+    int x = (int)data[2] | ((int)data[1] << 8);
+    int y = (int)data[4] | ((int)data[3] << 8);
     int pressure = 2047 - ((int)data[6] | ((int)data[5] << 8));
     // data[7] carries distance: 0 = in range (hovering/touching), >0 = out of range
     bool pen_out_of_range = ((int)data[7]) > 0;
