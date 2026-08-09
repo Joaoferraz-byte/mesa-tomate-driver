@@ -8,18 +8,22 @@ LIBUSB_LIBS := $(shell $(PKG_CONFIG) --libs libusb-1.0)
 
 .PHONY: all check clean install
 
-all: mtm1106-mode
+all: mtm1106-mode mtm1106-daemon
 
 mtm1106-mode: src/mtm1106-mode.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LIBUSB_CFLAGS) $< $(LDFLAGS) $(LIBUSB_LIBS) -o $@
 
-check: mtm1106-mode
+check: mtm1106-mode mtm1106-daemon
 	./mtm1106-mode --self-test
 	./mtm1106-mode --profile digimend --dry-run
 	./mtm1106-mode --profile mx002 --dry-run
 
-install: mtm1106-mode
+install: mtm1106-mode mtm1106-daemon
 	install -Dm755 mtm1106-mode $(DESTDIR)$(PREFIX)/bin/mtm1106-mode
+	install -Dm755 mtm1106-daemon $(DESTDIR)$(PREFIX)/bin/mtm1106-daemon
 
 clean:
-	rm -f mtm1106-mode
+	rm -f mtm1106-mode mtm1106-daemon
+
+mtm1106-daemon: src/mtm1106-daemon.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LIBUSB_CFLAGS) $< $(LDFLAGS) $(LIBUSB_LIBS) -o $@
