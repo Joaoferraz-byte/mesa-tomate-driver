@@ -70,7 +70,6 @@ static const uint8_t hotkey_keycodes[12] = {
 
 static volatile sig_atomic_t running = 1;
 static int pen_contact_threshold = 300;
-static int pen_proximity_threshold = 100;
 static bool debug_raw_reports = false;
 static bool hover_motion = false;
 
@@ -306,8 +305,14 @@ static int create_uinput_device(int *fd_out)
 #define T501_PRESSURE_GAIN 2
 #define T501_PRESSURE_MAX 2047
 #define PEN_CONTACT_THRESHOLD_DEFAULT 300
-#define PEN_PROXIMITY_THRESHOLD_DEFAULT 100
 
+/*
+ * Pressure normalization based on mx002_linux_driver approach:
+ * - If raw pressure is above (BASELINE - PROXIMITY_THRESHOLD), it's hover → pressure = 0
+ * - If raw pressure is below that threshold, it's touch → scale the pressure
+ * This matches the mx002 pattern exactly:
+ *   proximity_threshold = 600 → raw >= 1140 is hover, raw < 1140 is touch
+ */
 static int t501_pressure_from_raw(int raw_pressure)
 {
     int calibrated = (T501_PRESSURE_BASELINE - raw_pressure) * T501_PRESSURE_GAIN;
@@ -316,6 +321,16 @@ static int t501_pressure_from_raw(int raw_pressure)
     if (calibrated > T501_PRESSURE_MAX)
         return T501_PRESSURE_MAX;
     return calibrated;
+}
+
+/* Normalize: hover threshold in calibrated units. mx002 uses 600 raw = 1200 calibrated. */
+static int normalize_pressure(int raw_pressure)
+{
+    /* mx002 proximity_threshold = 600 raw units */
+    int raw_threshold = T501_PRESSURE_BASELINE - (pen_contact_threshold / T501_PRESSURE_GAIN);
+    if (raw_pressure >= raw_threshold)
+        return 0; /* hover: no drawing */
+    return t501_pressure_from_raw(raw_pressure); /* touch: scaled pressure */
 }
 
 static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
@@ -340,37 +355,53 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     int x = (int)data[2] | ((int)data[1] << 8);
     int y = (int)data[4] | ((int)data[3] << 8);
     int raw_pressure = ((int)data[5] << 8) | (int)data[6];
-    int pressure = t501_pressure_from_raw(raw_pressure);
-    // data[7] is a positive in-range distance/state value; zero means out of range.
-    bool pen_out_of_range = ((int)data[7]) == 0;
-    // Cursor proximity: any positive pressure means pen is near the surface
-    bool pen_near_surface = pressure > pen_proximity_threshold;
 
-    // Emit distance first; the firmware keeps this field at six in range.
-    int distance = pen_out_of_range ? 0 : 10;
+    /*
+     * CRITICAL FIX: Based on mx002_linux_driver analysis.
+     *
+     * The mx002 driver does NOT use data[7] for proximity detection.
+     * It normalizes pressure FIRST:
+     *   - If raw >= (1740-600)=1140 → hover → pressure = 0
+     *   - If raw < 1140 → touch → pressure = (1740-raw)*2
+     *
+     * The cursor is ALWAYS visible (ABS_X/Y always emitted) when the pen
+     * is reporting data. BTN_TOUCH is based purely on normalized pressure > 0.
+     *
+     * data[7] == 0 means the pen is completely out of range (removed from tablet).
+     * data[7] > 0 means the pen is in the tablet area (hover or touch).
+     */
+    bool pen_in_area = ((int)data[7]) != 0;
+
+    // Normalize pressure: hover → 0, touch → scaled value
+    int pressure = normalize_pressure(raw_pressure);
+    bool touching = pressure > 0;
+
+    // Distance: in-range = 10, out-of-range = 0
+    int distance = pen_in_area ? 10 : 0;
     emit_uinput_event(uinput_fd, EV_ABS, ABS_DISTANCE, distance);
 
-    // Hover reports contain non-zero pressure but must not move the drawing tool.
-    // Only contact reports send absolute motion unless hover motion is enabled.
-    // A positive value is not enough: only the calibrated threshold may assert BTN_TOUCH.
-    bool touching = !pen_out_of_range && pressure >= pen_contact_threshold;
     if (debug_raw_reports) {
         fprintf(stderr,
-                "MTM1106 raw: x=%d y=%d raw_pressure=%d pressure=%d distance=%u touch=%d bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                x, y, raw_pressure, pressure, (unsigned)data[7], touching ? 1 : 0,
+                "MTM1106 raw: x=%d y=%d raw_pressure=%d normalized_pressure=%d in_area=%d touch=%d bytes=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                x, y, raw_pressure, pressure, pen_in_area ? 1 : 0, touching ? 1 : 0,
                 data[0], data[1], data[2], data[3], data[4], data[5], data[6],
                 data[7], data[8], data[9], data[10], data[11], data[12]);
     }
-    // Cursor display requires a proper proximity lifecycle: BTN_TOOL_PEN=1 on
-    // enter, BTN_TOOL_PEN=0 on leave. Emitting it as a constant 1 confuses
-    // libinput/wayland compositors into never showing the cursor.
-    if (!*pen_in_proximity && pen_near_surface) {
+
+    /*
+     * Cursor lifecycle (BTN_TOOL_PEN):
+     * - Pen enters area (data[7] > 0): cursor appears (BTN_TOOL_PEN=1)
+     * - Pen leaves area (data[7] == 0): cursor disappears (BTN_TOOL_PEN=0)
+     *
+     * Cursor is visible during BOTH hover and touch, matching mx002 behavior
+     * where position is always reported regardless of pressure.
+     */
+    if (!*pen_in_proximity && pen_in_area) {
         emit_uinput_event(uinput_fd, EV_KEY, BTN_TOOL_PEN, 1);
-        emit_uinput_event(uinput_fd, EV_ABS, ABS_X, x);
-        emit_uinput_event(uinput_fd, EV_ABS, ABS_Y, y);
         *pen_in_proximity = true;
         *pen_touching = false;
-    } else if (*pen_in_proximity && (pen_out_of_range || (!pen_near_surface && !touching))) {
+    } else if (*pen_in_proximity && !pen_in_area) {
+        /* Pen left the area: release touch first, then hide cursor */
         if (*pen_touching) {
             emit_uinput_event(uinput_fd, EV_KEY, BTN_TOUCH, 0);
             *pen_touching = false;
@@ -378,16 +409,30 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
         emit_uinput_event(uinput_fd, EV_KEY, BTN_TOOL_PEN, 0);
         *pen_in_proximity = false;
     }
-    // Ensure BTN_TOUCH=0 is emitted before new touch to prevent line artifacts
+
+    /*
+     * Touch lifecycle (BTN_TOUCH):
+     * Only emit on state CHANGE (matching mx002 pattern).
+     * touching = normalized_pressure > 0
+     */
     if (*pen_in_proximity && touching != *pen_touching) {
         emit_uinput_event(uinput_fd, EV_KEY, BTN_TOUCH, touching ? 1 : 0);
         *pen_touching = touching;
     }
-    if (touching || hover_motion) {
+
+    /*
+     * ALWAYS emit ABS_X/Y when pen is in area.
+     * This is what mx002 does - cursor follows pen during hover AND touch.
+     * The previous code only emitted during touch (hover_motion=false),
+     * which caused the cursor to be invisible during hover.
+     */
+    if (*pen_in_proximity) {
         emit_uinput_event(uinput_fd, EV_ABS, ABS_X, x);
         emit_uinput_event(uinput_fd, EV_ABS, ABS_Y, y);
     }
-    emit_uinput_event(uinput_fd, EV_ABS, ABS_PRESSURE, touching ? pressure : 0);
+
+    /* Emit normalized pressure (0 during hover, scaled during touch) */
+    emit_uinput_event(uinput_fd, EV_ABS, ABS_PRESSURE, pressure);
 
     uint8_t pen = data[9];
     emit_uinput_event(uinput_fd, EV_KEY, BTN_STYLUS, pen == 4 ? 1 : 0);
@@ -527,8 +572,7 @@ static void usage(FILE *stream, const char *program)
             "Options:\n"
             "  --help    Show this help\n"
             "\nEnvironment:\n"
-            "  MTM1106_CONTACT_THRESHOLD    Pressure threshold for BTN_TOUCH (default: 300)\n"
-            "  MTM1106_PROXIMITY_THRESHOLD  Pressure threshold for cursor (default: 100)\n"
+            "  MTM1106_CONTACT_THRESHOLD  Pressure threshold for BTN_TOUCH (default: 300)\n"
             "  MTM1106_DEBUG_RAW=1        Log raw pressure/distance for calibration\n"
             "  MTM1106_HOVER_MOTION=1    Allow cursor motion while hovering\n",
             program);
@@ -553,15 +597,6 @@ int main(int argc, char **argv)
             pen_contact_threshold = (int)value;
     } else {
         pen_contact_threshold = PEN_CONTACT_THRESHOLD_DEFAULT;
-    }
-    const char *proximity_env = getenv("MTM1106_PROXIMITY_THRESHOLD");
-    if (proximity_env != NULL && proximity_env[0] != '\0') {
-        char *end = NULL;
-        long value = strtol(proximity_env, &end, 10);
-        if (end != proximity_env && *end == '\0' && value >= 0 && value <= 2047)
-            pen_proximity_threshold = (int)value;
-    } else {
-        pen_proximity_threshold = PEN_PROXIMITY_THRESHOLD_DEFAULT;
     }
     debug_raw_reports = getenv("MTM1106_DEBUG_RAW") != NULL &&
                         strcmp(getenv("MTM1106_DEBUG_RAW"), "0") != 0;
