@@ -11,6 +11,7 @@
 #define MTM_VENDOR_ID 0x08f2u
 #define MTM_PRODUCT_ID 0x6811u
 #define MTM_REPORT_TYPE_AND_ID 0x0308u
+#define MTM_DRIVER_SYSFS_PATH "/sys/bus/usb/drivers/usb"
 #define MTM_REQUEST_TYPE 0x21u
 #define MTM_SET_REPORT 0x09u
 #define MTM_REPORT_LENGTH 8u
@@ -44,6 +45,7 @@ struct options {
     enum profile profile;
     bool dry_run;
     bool self_test;
+    bool reprobe;
     int bus;
     int address;
 };
@@ -62,6 +64,7 @@ static void usage(FILE *stream, const char *program)
             "Activates full-area (PC) mode for MTM-1106/T501 (08f2:6811).\n\n"
             "Options:\n"
             "  --profile digimend|mx002|detect  Report profile (default: digimend)\n"
+            "  --reprobe                        Re-probe the device after the mode switch so the kernel picks up the 64-byte full-area descriptor\n"
             "  --bus N                          Restrict to USB bus N\n"
             "  --address N                      Restrict to USB address N\n"
             "  --dry-run                        Show what would be sent without opening USB\n"
@@ -458,6 +461,46 @@ static int send_profile_once(libusb_device_handle *handle, enum profile profile,
 }
 
 /*
+ * Force a USB re-probe: writing the device path to the driver's
+ * "unbind" and "bind" sysfs entries makes the kernel drop and reload
+ * all interfaces, so hid-generic/hid-t501 read the new 64-byte
+ * (full-area) report descriptor instead of the cached 8-byte mobile
+ * one. Non-fatal: the mode switch itself is what matters.
+ */
+static void reprobe_device(libusb_device_handle *handle)
+{
+    int bus = (int)libusb_get_bus_number(libusb_get_device(handle));
+    int address = (int)libusb_get_device_address(libusb_get_device(handle));
+    int written;
+
+    FILE *unbind = fopen("/sys/bus/usb/drivers/usb/unbind", "w");
+    if (unbind == NULL) {
+        fprintf(stderr, "Warning: could not open unbind sysfs entry.\n");
+        return;
+    }
+    written = fprintf(unbind, "%d-%d\n", bus, address);
+    fclose(unbind);
+    if (written <= 0) {
+        fprintf(stderr, "Warning: could not unbind device %d-%d.\n", bus, address);
+        return;
+    }
+
+    usleep(500 * 1000);
+
+    FILE *bind = fopen("/sys/bus/usb/drivers/usb/bind", "w");
+    if (bind == NULL) {
+        fprintf(stderr, "Warning: could not open bind sysfs entry.\n");
+        return;
+    }
+    written = fprintf(bind, "%d-%d\n", bus, address);
+    fclose(bind);
+    if (written <= 0)
+        fprintf(stderr, "Warning: could not bind device %d-%d.\n", bus, address);
+    else
+        printf("USB re-probe triggered for %d-%d; the kernel should reload the full-area descriptor.\n", bus, address);
+}
+
+/*
  * Full activation attempt: detach kernel drivers, reset, reconfigure, claim
  * and send the profile sequence. Returns 0 on success, -1 otherwise.
  */
@@ -504,6 +547,7 @@ int main(int argc, char **argv)
         .profile = PROFILE_DIGIMEND,
         .dry_run = false,
         .self_test = false,
+        .reprobe = false,
         .bus = -1,
         .address = -1,
     };
@@ -511,6 +555,7 @@ int main(int argc, char **argv)
         {"profile", required_argument, NULL, 'p'},
         {"bus", required_argument, NULL, 'b'},
         {"address", required_argument, NULL, 'a'},
+        {"reprobe", no_argument, NULL, 'r'},
         {"dry-run", no_argument, NULL, 'n'},
         {"self-test", no_argument, NULL, 't'},
         {"help", no_argument, NULL, 'h'},
@@ -523,6 +568,9 @@ int main(int argc, char **argv)
         case 'p':
             if (parse_profile(optarg, &options.profile) != 0)
                 return EXIT_FAILURE;
+            break;
+        case 'r':
+            options.reprobe = true;
             break;
         case 'b':
             if (parse_nonnegative(optarg, &options.bus, "Bus") != 0)
@@ -578,9 +626,17 @@ int main(int argc, char **argv)
                     "Warning: no HID interface with interrupt IN endpoint found; "
                     "falling back to interface %d (run --profile detect to inspect).\n",
                     control_interface);
-        else
-            printf("Control interface: %d (interrupt IN on 0x%02x).\n",
-                   control_interface, interfaces[0].interrupt_ep);
+        else {
+            printf("Control interface: %d (interrupt IN on 0x%02x, max packet %u bytes).\n",
+                   control_interface, interfaces[0].interrupt_ep,
+                   interfaces[0].interrupt_wMaxPacketSize);
+            if (interfaces[0].interrupt_wMaxPacketSize < 64)
+                fprintf(stderr,
+                        "Warning: the control interface reports only %u bytes per packet; "
+                        "the full-area (PC) mode needs the 64-byte interface. "
+                        "Use --reprobe or switch USB ports if the active area stays small.\n",
+                        interfaces[0].interrupt_wMaxPacketSize);
+        }
 
         struct libusb_config_descriptor *config = NULL;
         int num_interfaces = control_interface + 1;
@@ -595,6 +651,8 @@ int main(int argc, char **argv)
         } else {
             result = send_profile(handle, options.profile, control_interface,
                                   num_interfaces);
+            if (result == 0 && options.reprobe)
+                reprobe_device(handle);
         }
         libusb_close(handle);
         libusb_unref_device(device);

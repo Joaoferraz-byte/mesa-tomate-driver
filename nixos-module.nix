@@ -6,6 +6,7 @@ let
   cfg = config.services."mtm1106-mode";
   mtm1106-mode = pkgs.callPackage ./package.nix { };
   profileArg = [ "--profile" cfg.profile ];
+  reprobeArg = lib.optional cfg.enableKernelReprobe "--reprobe";
 in
 {
   options.services."mtm1106-mode" = {
@@ -35,6 +36,18 @@ in
         Automatically apply the selected profile via udev when the tablet is connected.
       '';
     };
+
+    enableKernelReprobe = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        After sending the mode-switch reports, force a USB re-probe of the
+        tablet through the kernel sysfs entries. This makes hid-generic/
+        hid-t501 reload the 64-byte full-area report descriptor instead of
+        keeping the cached 8-byte "mobile area" one; keep enabled unless
+        the tablet fails to reconnect.
+      '';
+    };
   };
 
   config = lib.mkMerge [
@@ -53,7 +66,7 @@ in
         after = [ "systemd-udev-settle.service" ];
         serviceConfig = {
           Type = "oneshot";
-          ExecStart = lib.escapeShellArgs ([ "${cfg.package}/bin/mtm1106-mode" ] ++ profileArg);
+          ExecStart = lib.escapeShellArgs ([ "${cfg.package}/bin/mtm1106-mode" ] ++ profileArg ++ reprobeArg);
           User = "root";
           NoNewPrivileges = true;
           PrivateTmp = true;
