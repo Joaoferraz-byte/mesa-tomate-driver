@@ -27,7 +27,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
-#include <libudev.h>
 #include <libusb-1.0/libusb.h>
 #include <linux/input-event-codes.h>
 #include <linux/uinput.h>
@@ -386,6 +385,8 @@ static int run_session(libusb_context *context, libusb_device *device,
     return result;
 }
 
+/* NOTE: this daemon deliberately has no runtime udev dependency;
+ * libusb's device enumeration is sufficient for tracking reconnections. */
 static void usage(FILE *stream, const char *program)
 {
     fprintf(stream,

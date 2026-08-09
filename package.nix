@@ -6,18 +6,17 @@
 
 stdenv.mkDerivation {
   pname = "mtm1106-mode";
-  version = "0.2.0";
+  version = "0.2.1";
 
   src = ./.;
 
   nativeBuildInputs = [ pkg-config ];
   buildInputs = [ libusb1 ];
 
-  # The daemon only needs libudev at link time; on NixOS it is provided by
-  # the udev library that ships with systemd's core (already in the closure),
-  # so we link against the udev headers/libs from it directly without adding
-  # a package dependency that does not exist in nixpkgs.
-  env.LIBUDEV_LIBS = "-ludev";
+  # The daemon no longer links against libudev (it uses plain libusb
+  # enumeration for reconnection tracking), so the build only needs libusb;
+  # linking against the system's /lib/libudev.so stub used to produce a
+  # "generic linux" binary that NixOS refuses to run (stub-ld error 127).
 
   doCheck = true;
   checkPhase = ''
