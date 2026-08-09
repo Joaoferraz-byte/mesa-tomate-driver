@@ -299,10 +299,27 @@ static int create_uinput_device(int *fd_out)
     return 0;
 }
 
-/* The controller reports non-zero values while hovering. 1400 is only a
- * conservative fallback; MTM1106_CONTACT_THRESHOLD can override it after
- * measuring this firmware's raw hover/contact distributions. */
+/*
+ * T501 pressure is a height-like signal, not conventional force pressure.
+ * The native/reference drivers use a device baseline near 1740, then treat
+ * lower raw values as stronger contact. Using 2047 - raw makes hover values
+ * look like pressure and is the reason the pen draws above the surface.
+ * MTM1106_CONTACT_THRESHOLD remains configurable for hardware variation.
+ */
+#define T501_PRESSURE_BASELINE 1740
+#define T501_PRESSURE_GAIN 2
+#define T501_PRESSURE_MAX 2047
 #define PEN_CONTACT_THRESHOLD_DEFAULT 1400
+
+static int t501_pressure_from_raw(int raw_pressure)
+{
+    int calibrated = (T501_PRESSURE_BASELINE - raw_pressure) * T501_PRESSURE_GAIN;
+    if (calibrated < 0)
+        return 0;
+    if (calibrated > T501_PRESSURE_MAX)
+        return T501_PRESSURE_MAX;
+    return calibrated;
+}
 
 static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
                             uint16_t *last_hotkey_bits, bool *pen_in_proximity,
@@ -312,7 +329,7 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
      * 64-byte report layout (reverse-engineered from vin1060plus/mx002):
      *   data[1..2]  X axis little-endian (raw coordinate)
      *   data[3..4]  Y axis little-endian (raw coordinate)
-     *   data[5..6]  pressure (2047 - raw)
+     *   data[5..6]  raw height/pressure, little-endian; native mapping uses 1740 - raw
      *   data[9]     pen buttons (4 = stylus, 6 = stylus2)
      *   data[11..12] tablet hotkey bitmask (active-low pairs)
      */
@@ -326,7 +343,7 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     int x = (int)data[2] | ((int)data[1] << 8);
     int y = (int)data[4] | ((int)data[3] << 8);
     int raw_pressure = (int)data[5] | ((int)data[6] << 8);
-    int pressure = 2047 - raw_pressure;
+    int pressure = t501_pressure_from_raw(raw_pressure);
     // data[7] carries distance: 0 = in range (hovering/touching), >0 = out of range
     bool pen_out_of_range = ((int)data[7]) > 0;
 
