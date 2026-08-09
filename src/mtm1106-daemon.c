@@ -233,11 +233,8 @@ static int create_uinput_device(int *fd_out)
     /*
      * Kernel-side uinput state machine (uinput.c): UI_DEV_CREATE only
      * succeeds when the device reached UIST_SETUP_COMPLETE, which the
-     * write of the uinput_user_dev below triggers. This minimal
-     * sequence (write + SET bits + CREATE, no UI_ABS_SETUP) is the one
-     * used by the working mx002 driver; UI_ABS_SETUP proved to fail
-     * with EFAULT/EINVAL on the user's kernel because the ioctl macro
-     * in the build headers does not match the running kernel.
+     * write of the uinput_user_dev below triggers. Modern kernels also
+     * receive axis resolution through UI_ABS_SETUP below.
      */
     struct uinput_user_dev uidev = {0};
     snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "MTM-1106 Pen");
@@ -262,6 +259,25 @@ static int create_uinput_device(int *fd_out)
     ioctl(fd, UI_SET_ABSBIT, ABS_Y);
     ioctl(fd, UI_SET_ABSBIT, ABS_PRESSURE);
     ioctl(fd, UI_SET_ABSBIT, ABS_DISTANCE);
+#ifdef UI_ABS_SETUP
+    struct uinput_abs_setup x_setup = {
+        .code = ABS_X,
+        .absinfo = { .minimum = 0, .maximum = 4095, .resolution = 100 },
+    };
+    struct uinput_abs_setup y_setup = {
+        .code = ABS_Y,
+        .absinfo = { .minimum = 0, .maximum = 4095, .resolution = 100 },
+    };
+    struct uinput_abs_setup pressure_setup = {
+        .code = ABS_PRESSURE,
+        .absinfo = { .minimum = 0, .maximum = 2047, .resolution = 1 },
+    };
+    if (ioctl(fd, UI_ABS_SETUP, &x_setup) != 0 ||
+        ioctl(fd, UI_ABS_SETUP, &y_setup) != 0 ||
+        ioctl(fd, UI_ABS_SETUP, &pressure_setup) != 0) {
+        fprintf(stderr, "uinput axis resolution setup failed: %s\n", strerror(errno));
+    }
+#endif
     ioctl(fd, UI_SET_KEYBIT, BTN_TOOL_PEN);
     ioctl(fd, UI_SET_KEYBIT, BTN_TOUCH);
     ioctl(fd, UI_SET_KEYBIT, BTN_STYLUS);
