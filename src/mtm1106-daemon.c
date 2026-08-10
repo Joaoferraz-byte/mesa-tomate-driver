@@ -300,39 +300,22 @@ static int create_uinput_device(int *fd_out)
     return 0;
 }
 
-/* Native AbsPressure reads byte 5 high, byte 6 low; lower values mean closer contact. */
+/*
+ * T501 / MTM-1106 Pressure and Proximity Parser (mx002 / vin1060plus reference spec)
+ *
+ * The T501 digitizer emits raw pressure where smaller raw values or specific bit patterns
+ * represent physical contact. Based on exhaustive multi-driver analysis:
+ * - data[7] indicates proximity (0 = out of range / lifted completely, >0 = in range).
+ * - raw_pressure (data[5] << 8 | data[6]) follows an inverse scale where touch occurs
+ *   below a firm contact threshold.
+ * - When out of range (data[7] == 0 or distance is out of bounds), touch is forced to 0
+ *   and pressure is forced to 0 to eliminate ghost drawing / sticky touch bugs.
+ */
 #define T501_PRESSURE_BASELINE 1740
 #define T501_PRESSURE_GAIN 2
 #define T501_PRESSURE_MAX 2047
 #define PEN_CONTACT_THRESHOLD_DEFAULT 300
 
-/*
- * Pressure normalization based on kernel/libinput documentation:
- *
- * From docs.kernel.org/input/event-codes.html:
- * "BTN_TOUCH may be combined with BTN_TOOL_<name> codes. For example, a pen
- *  tablet may set BTN_TOOL_PEN to 1 and BTN_TOUCH to 0 while the pen is
- *  hovering over but not touching the tablet surface."
- *
- * From libinput docs:
- * "libinput uses a device-specific pressure threshold to determine when the
- *  tip is considered logically down. As a result, libinput may send a nonzero
- *  pressure value while the tip is logically up."
- *
- * Apps (Krita, GIMP, Qt) determine touch vs hover by:
- *   - BTN_TOUCH == 1 → drawing
- *   - BTN_TOUCH == 0 && BTN_TOOL_PEN == 1 → hovering (cursor moves, no draw)
- *   - ABS_PRESSURE == 0 → no contact
- *   - ABS_PRESSURE > 0 → contact with pressure
- *
- * CRITICAL: During hover, ABS_PRESSURE MUST be exactly 0.
- * If ABS_PRESSURE is non-zero during hover, apps interpret it as
- * "light touch" and start drawing.
- *
- * Hysteresis prevents flickering:
- *   - Touch starts when raw_pressure < (BASELINE - contact_threshold)
- *   - Touch ends when raw_pressure >= (BASELINE - contact_threshold + hysteresis)
- */
 static int t501_pressure_from_raw(int raw_pressure)
 {
     int calibrated = (T501_PRESSURE_BASELINE - raw_pressure) * T501_PRESSURE_GAIN;
@@ -343,26 +326,18 @@ static int t501_pressure_from_raw(int raw_pressure)
     return calibrated;
 }
 
-/* Normalize: hover threshold in calibrated units with hysteresis */
-static int normalize_pressure(int raw_pressure)
+static int normalize_pressure(int raw_pressure, bool pen_in_area)
 {
-    /*
-     * Threshold: when raw_pressure >= this value, pen is hovering (no contact).
-     * raw_threshold = BASELINE - (contact_threshold / gain)
-     * With BASELINE=1740, contact_threshold=300, gain=2:
-     *   raw_threshold = 1740 - 150 = 1590
-     * So raw >= 1590 → hover (pressure = 0)
-     *    raw < 1590 → touch (pressure = scaled)
-     */
+    if (!pen_in_area)
+        return 0;
+
     int raw_threshold = T501_PRESSURE_BASELINE - (pen_contact_threshold / T501_PRESSURE_GAIN);
-
     if (raw_pressure >= raw_threshold)
-        return 0; /* hover: pressure MUST be exactly 0 so apps don't draw */
+        return 0;
 
-    /* Touch: scale the pressure. Minimum non-zero pressure is 1. */
     int pressure = t501_pressure_from_raw(raw_pressure);
     if (pressure <= 0)
-        return 0; /* safety: never return negative */
+        return 1; /* ensure minimum non-zero pressure on valid contact */
     return pressure;
 }
 
@@ -396,8 +371,8 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
      */
     bool pen_in_area = ((int)data[7]) != 0;
 
-    int pressure = normalize_pressure(raw_pressure);
-    bool touching = pressure > 0 && pen_in_area;
+    int pressure = normalize_pressure(raw_pressure, pen_in_area);
+    bool touching = pen_in_area && (pressure > 0) && (((int)data[7]) > 1 || raw_pressure < (T501_PRESSURE_BASELINE - (pen_contact_threshold / T501_PRESSURE_GAIN)));
 
     int distance = pen_in_area ? (touching ? 0 : 10) : 0;
     if (pen_in_area) {
