@@ -390,40 +390,15 @@ static void dispatch_report(int uinput_fd, const uint8_t *data, int length,
     int raw_pressure = ((int)data[5] << 8) | (int)data[6];
 
     /*
-     * CRITICAL FIX: Based on mx002_linux_driver analysis.
-     *
-     * The mx002 driver does NOT use data[7] for proximity detection.
-     * It normalizes pressure FIRST:
-     *   - If raw >= (1740-600)=1140 → hover → pressure = 0
-     *   - If raw < 1140 → touch → pressure = (1740-raw)*2
-     *
-     * The cursor is ALWAYS visible (ABS_X/Y always emitted) when the pen is in area.
-     * is reporting data. BTN_TOUCH is based purely on normalized pressure > 0.
-     *
-     * data[7] == 0 means the pen is completely out of range (removed from tablet).
-     * data[7] > 0 means the pen is in the tablet area (hover or touch).
+     * Pen proximity detection: data[7] indicates if pen is in tablet area.
+     * 0 = out of range, >0 = in range (hover or touch).
+     * This is the primary signal for BTN_TOOL_PEN lifecycle.
      */
     bool pen_in_area = ((int)data[7]) != 0;
 
-    // Normalize pressure: hover → 0, touch → scaled value
     int pressure = normalize_pressure(raw_pressure);
-    bool touching = pressure > 0;
+    bool touching = pressure > 0 && pen_in_area;
 
-    /*
-     * ABS_DISTANCE tells apps how far the pen is from the surface.
-     * During hover: distance > 0 (pen is near but not touching)
-     * During touch: distance = 0 (pen is on the surface)
-     * Out of range: no distance event needed
-     *
-     * From kernel docs:
-     * "ABS_DISTANCE: Used to describe the distance of a tool from an
-     *  interaction surface. This event should only be emitted while the
-     *  tool is hovering, meaning in close proximity of the device and
-     *  while the value of the BTN_TOUCH code is 0."
-     *
-     * During touch: ABS_DISTANCE = 0 (or not emitted)
-     * During hover: ABS_DISTANCE = non-zero (e.g., 10)
-     */
     int distance = pen_in_area ? (touching ? 0 : 10) : 0;
     if (pen_in_area) {
         emit_uinput_event(uinput_fd, EV_ABS, ABS_DISTANCE, distance);
