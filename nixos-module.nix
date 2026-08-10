@@ -64,6 +64,16 @@ in
         from userspace and this option has no effect.
       '';
     };
+
+    environment = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = {};
+      description = ''Environment variables to pass to the daemon or mode-switch service.'';
+      example = lib.literalExpression ''{
+        MTM1106_CONTACT_THRESHOLD = "300";
+        MTM1106_DEBUG_RAW = "0";
+      }'';
+    };
   };
 
   config = lib.mkMerge [
@@ -81,6 +91,7 @@ in
         documentation = [ "https://github.com/Joaoferraz-byte/mesa-tomate-driver" ];
         after = [ "systemd-udev-settle.service" ];
         wantedBy = [ "multi-user.target" ];
+        environment = cfg.environment;
         serviceConfig = {
           Type = "simple";
           ExecStart = "${cfg.package}/bin/mtm1106-daemon";
@@ -105,6 +116,7 @@ in
         description = "Activate full-area mode on the MTM-1106/T501 tablet";
         documentation = [ "https://github.com/Joaoferraz-byte/mesa-tomate-driver" ];
         after = [ "systemd-udev-settle.service" ];
+        environment = cfg.environment;
         serviceConfig = {
           Type = "oneshot";
           ExecStart = lib.escapeShellArgs ([ "${cfg.package}/bin/mtm1106-mode" ] ++ profileArg ++ reprobeArg);
